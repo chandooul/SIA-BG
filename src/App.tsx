@@ -217,9 +217,15 @@ export default function App() {
     if (!file) return;
 
     setIsBulkUploading(true);
-    const toastId = toast.loading('Processando planilha...');
+    const toastId = toast.loading('Substituindo dados e processando planilha...');
 
     try {
+      // 1. Delete existing officers (Replacement logic)
+      const snapshot = await getDocs(collection(db, 'officers'));
+      const deletePromises = snapshot.docs.map(d => deleteDoc(doc(db, 'officers', d.id)));
+      await Promise.all(deletePromises);
+
+      // 2. Process new data
       const data = await file.arrayBuffer();
       const workbook = XLSX.read(data);
       const worksheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -249,33 +255,54 @@ export default function App() {
         }
       }
 
-      toast.success(`${successCount} policiais importados com sucesso!`, { id: toastId });
+      toast.success(`${successCount} policiais importados. Banco de dados atualizado!`, { id: toastId });
       if (errorCount > 0) {
         toast.error(`${errorCount} registros ignorados por falta de dados obrigatórios.`);
       }
     } catch (error) {
       console.error(error);
-      toast.error('Erro ao ler planilha. Verifique o formato.', { id: toastId });
+      toast.error('Erro ao atualizar banco de dados. Verifique o formato.', { id: toastId });
     } finally {
       setIsBulkUploading(false);
       e.target.value = ''; // Reset input
     }
   };
 
+  // Helper for flexible matching
+  const getRegistrationVariations = (reg: string) => {
+    const nums = reg.replace(/\D/g, '');
+    if (!nums) return [reg.toLowerCase()];
+    const variations = new Set([reg.toLowerCase(), nums]);
+    if (nums.length >= 6) {
+      variations.add(`${nums.substring(0, nums.length - 1)}-${nums.substring(nums.length - 1)}`);
+    }
+    return Array.from(variations);
+  };
+
+  const getUnitVariations = (unit: string) => {
+    const normalized = unit.toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const numMatch = normalized.match(/(\d+)/);
+    if (!numMatch) return [unit.toLowerCase()];
+    
+    const n = numMatch[1];
+    const variations = new Set([
+      unit.toLowerCase(),
+      `${n}bpm`,
+      `${n}°bpm`,
+      `${n}° bpm`,
+      `${n} bpm`,
+      `${n}° batalhao`,
+      `${n}° batalhão`,
+      `${n} batalhao`,
+      `${n} batalhão`
+    ]);
+    return Array.from(variations);
+  };
+
   // PDF Processing
   const processPDF = async (file: File) => {
     console.log('Starting PDF processing for:', file.name);
-    console.log('Current data state:', {
-      officersCount: officers.length,
-      unitsCount: units.length,
-      termsCount: searchTerms.length
-    });
-
-    if (officers.length === 0 && units.length === 0 && searchTerms.length === 0) {
-      toast.error('Nenhum dado carregado do banco de dados para comparação.');
-      // We don't return here because maybe they just want to see if it processes at all
-    }
-
+    
     setIsProcessing(true);
     setFileName(file.name);
     setResults([]);
@@ -301,14 +328,14 @@ export default function App() {
             if (!off.name && !off.registration) return;
             
             const nameLower = off.name?.toLowerCase();
-            const regLower = off.registration?.toLowerCase();
+            const regVariations = getRegistrationVariations(off.registration);
 
             const nameMatch = nameLower && textLower.includes(nameLower);
-            const regMatch = regLower && textLower.includes(regLower);
+            const regMatch = regVariations.find(v => textLower.includes(v));
 
             if (nameMatch || regMatch) {
-              const matchStr = nameMatch ? off.name : off.registration;
-              const index = textLower.indexOf((nameMatch ? nameLower : regLower) || '');
+              const matchStr = nameMatch ? off.name : (regMatch || off.registration);
+              const index = textLower.indexOf(matchStr.toLowerCase());
               const start = Math.max(0, index - 60);
               const end = Math.min(text.length, index + matchStr.length + 80);
               const context = text.substring(start, end).replace(/\s+/g, ' ').trim();
@@ -327,15 +354,15 @@ export default function App() {
           units.forEach(unit => {
             if (!unit.name) return;
             
-            const nameLower = unit.name.toLowerCase();
+            const unitVariations = getUnitVariations(unit.name);
             const acronymLower = unit.acronym?.toLowerCase();
 
-            const nameMatch = textLower.includes(nameLower);
+            const unitMatch = unitVariations.find(v => textLower.includes(v));
             const acronymMatch = acronymLower && textLower.includes(acronymLower);
 
-            if (nameMatch || acronymMatch) {
-              const matchStr = nameMatch ? unit.name : (unit.acronym || '');
-              const index = textLower.indexOf((nameMatch ? nameLower : acronymLower) || '');
+            if (unitMatch || acronymMatch) {
+              const matchStr = unitMatch || (unit.acronym || '');
+              const index = textLower.indexOf(matchStr.toLowerCase());
               const start = Math.max(0, index - 60);
               const end = Math.min(text.length, index + matchStr.length + 80);
               const context = text.substring(start, end).replace(/\s+/g, ' ').trim();
