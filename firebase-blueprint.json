@@ -1,0 +1,50 @@
+{
+  "entities": {
+    "Officer": {
+      "title": "Policial",
+      "description": "Dados do policial militar",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Nome completo do policial" },
+        "registration": { "type": "string", "description": "Matrícula do policial" },
+        "unit": { "type": "string", "description": "Unidade onde está lotado" },
+        "rank": { "type": "string", "description": "Posto ou Graduação" }
+      },
+      "required": ["name", "registration", "unit"]
+    },
+    "Unit": {
+      "title": "Unidade",
+      "description": "Unidade militar",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Nome da unidade" },
+        "acronym": { "type": "string", "description": "Sigla da unidade" }
+      },
+      "required": ["name"]
+    },
+    "SearchTerm": {
+      "title": "Termo de Pesquisa",
+      "description": "Termos personalizados para busca no BG",
+      "type": "object",
+      "properties": {
+        "term": { "type": "string", "description": "Termo a ser identificado" },
+        "category": { "type": "string", "description": "Categoria do termo (Instituição, Evento, etc.)" }
+      },
+      "required": ["term"]
+    }
+  },
+  "firestore": {
+    "/officers/{officerId}": {
+      "schema": "Officer",
+      "description": "Coleção de policiais"
+    },
+    "/units/{unitId}": {
+      "schema": "Unit",
+      "description": "Coleção de unidades militares"
+    },
+    "/searchTerms/{termId}": {
+      "schema": "SearchTerm",
+      "description": "Coleção de termos personalizados"
+    }
+  }
+}

@@ -1,0 +1,80 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: officers
+    // Fields:
+    //   - name: string (required)
+    //   - registration: string (required)
+    //   - unit: string (required)
+    //   - rank: string (optional)
+    //
+    // Collection: units
+    // Fields:
+    //   - name: string (required)
+    //   - acronym: string (optional)
+    //
+    // Collection: searchTerms
+    // Fields:
+    //   - term: string (required)
+    //   - category: string (optional)
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "chandooul@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function isValidOfficer(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
+             data.registration is string && data.registration.size() > 0 && data.registration.size() < 50 &&
+             data.unit is string && data.unit.size() > 0;
+    }
+
+    function isValidUnit(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() < 200;
+    }
+
+    function isValidSearchTerm(data) {
+      return data.term is string && data.term.size() > 0 && data.term.size() < 200;
+    }
+
+    // Rules
+    match /users/{userId} {
+      allow read: if isAuthenticated() && request.auth.uid == userId;
+      allow write: if isAdmin();
+    }
+
+    match /officers/{officerId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAdmin() && isValidOfficer(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /units/{unitId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAdmin() && isValidUnit(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /searchTerms/{termId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAdmin() && isValidSearchTerm(request.resource.data);
+      allow delete: if isAdmin();
+    }
+  }
+}
