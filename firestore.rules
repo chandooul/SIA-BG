@@ -60,19 +60,19 @@ service cloud.firestore {
     }
 
     match /officers/{officerId} {
-      allow read: if isAuthenticated();
+      allow read: if true;
       allow create, update: if isAdmin() && isValidOfficer(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /units/{unitId} {
-      allow read: if isAuthenticated();
+      allow read: if true;
       allow create, update: if isAdmin() && isValidUnit(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /searchTerms/{termId} {
-      allow read: if isAuthenticated();
+      allow read: if true;
       allow create, update: if isAdmin() && isValidSearchTerm(request.resource.data);
       allow delete: if isAdmin();
     }

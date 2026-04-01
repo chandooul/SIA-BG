@@ -123,26 +123,28 @@ export default function App() {
 
   // Firestore Listeners
   useEffect(() => {
-    if (!user) return;
-
+    // Listeners now work for everyone (public read)
     const unsubOfficers = onSnapshot(collection(db, 'officers'), (snapshot) => {
       setOfficers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Officer)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'officers'));
+    }, (err) => {
+      // Only log if it's a real error, not just permission (though read is public now)
+      console.error('Error fetching officers:', err);
+    });
 
     const unsubUnits = onSnapshot(collection(db, 'units'), (snapshot) => {
       setUnits(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Unit)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'units'));
+    }, (err) => console.error('Error fetching units:', err));
 
     const unsubTerms = onSnapshot(collection(db, 'searchTerms'), (snapshot) => {
       setSearchTerms(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as SearchTerm)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'searchTerms'));
+    }, (err) => console.error('Error fetching terms:', err));
 
     return () => {
       unsubOfficers();
       unsubUnits();
       unsubTerms();
     };
-  }, [user]);
+  }, []);
 
   const handleLogin = async () => {
     try {
@@ -376,33 +378,6 @@ export default function App() {
     );
   }
 
-  if (!user) {
-    return (
-      <div className="min-h-screen bg-[#f5f5f0] flex flex-col items-center justify-center p-4">
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="max-w-md w-full bg-white rounded-[32px] p-12 shadow-sm text-center border border-black/5"
-        >
-          <div className="w-20 h-20 bg-[#5A5A40] rounded-full flex items-center justify-center mx-auto mb-8">
-            <FileText className="text-white w-10 h-10" />
-          </div>
-          <h1 className="text-4xl font-serif font-light text-[#1a1a1a] mb-4">SIA-BG</h1>
-          <p className="text-[#5A5A40] font-serif italic mb-12">
-            Sistema de Identificação Automatizada de Boletins Gerais da PMRN
-          </p>
-          <button 
-            onClick={handleLogin}
-            className="w-full bg-[#5A5A40] text-white rounded-full py-4 px-8 flex items-center justify-center gap-3 hover:bg-[#4a4a35] transition-colors font-medium tracking-wide"
-          >
-            <LogIn className="w-5 h-5" />
-            Acessar com Google
-          </button>
-        </motion.div>
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen bg-[#f5f5f0] font-sans text-[#1a1a1a]">
       <Toaster position="top-right" />
@@ -417,42 +392,76 @@ export default function App() {
         </div>
 
         <nav className="flex-1 space-y-2">
-          {[
-            { id: 'dashboard', icon: Search, label: 'Identificação' },
-            { id: 'database', icon: Users, label: 'Banco de Dados' },
-            { id: 'settings', icon: Settings, label: 'Configurações' }
-          ].map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setActiveTab(item.id as any)}
-              className={cn(
-                "w-full flex items-center gap-4 px-6 py-4 rounded-2xl transition-all duration-200",
-                activeTab === item.id 
-                  ? "bg-[#5A5A40] text-white shadow-lg shadow-[#5A5A40]/20" 
-                  : "text-[#5A5A40]/60 hover:bg-[#f5f5f0] hover:text-[#5A5A40]"
-              )}
-            >
-              <item.icon className="w-5 h-5" />
-              <span className="font-medium">{item.label}</span>
-            </button>
-          ))}
+          <button
+            onClick={() => setActiveTab('dashboard')}
+            className={cn(
+              "w-full flex items-center gap-4 px-6 py-4 rounded-2xl transition-all duration-200",
+              activeTab === 'dashboard' 
+                ? "bg-[#5A5A40] text-white shadow-lg shadow-[#5A5A40]/20" 
+                : "text-[#5A5A40]/60 hover:bg-[#f5f5f0] hover:text-[#5A5A40]"
+            )}
+          >
+            <Search className="w-5 h-5" />
+            <span className="font-medium">Identificação</span>
+          </button>
+
+          {user && (
+            <>
+              <button
+                onClick={() => setActiveTab('database')}
+                className={cn(
+                  "w-full flex items-center gap-4 px-6 py-4 rounded-2xl transition-all duration-200",
+                  activeTab === 'database' 
+                    ? "bg-[#5A5A40] text-white shadow-lg shadow-[#5A5A40]/20" 
+                    : "text-[#5A5A40]/60 hover:bg-[#f5f5f0] hover:text-[#5A5A40]"
+                )}
+              >
+                <Users className="w-5 h-5" />
+                <span className="font-medium">Banco de Dados</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('settings')}
+                className={cn(
+                  "w-full flex items-center gap-4 px-6 py-4 rounded-2xl transition-all duration-200",
+                  activeTab === 'settings' 
+                    ? "bg-[#5A5A40] text-white shadow-lg shadow-[#5A5A40]/20" 
+                    : "text-[#5A5A40]/60 hover:bg-[#f5f5f0] hover:text-[#5A5A40]"
+                )}
+              >
+                <Settings className="w-5 h-5" />
+                <span className="font-medium">Configurações</span>
+              </button>
+            </>
+          )}
         </nav>
 
         <div className="pt-8 border-t border-black/5">
-          <div className="flex items-center gap-3 mb-6 px-2">
-            <img src={user.photoURL || ''} alt="" className="w-10 h-10 rounded-full border border-black/5" referrerPolicy="no-referrer" />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold truncate">{user.displayName}</p>
-              <p className="text-xs text-[#5A5A40]/60 truncate">{user.email}</p>
-            </div>
-          </div>
-          <button 
-            onClick={handleLogout}
-            className="w-full flex items-center gap-3 px-6 py-3 text-red-500 hover:bg-red-50 rounded-xl transition-colors"
-          >
-            <LogOut className="w-4 h-4" />
-            Sair
-          </button>
+          {user ? (
+            <>
+              <div className="flex items-center gap-3 mb-6 px-2">
+                <img src={user.photoURL || ''} alt="" className="w-10 h-10 rounded-full border border-black/5" referrerPolicy="no-referrer" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold truncate">{user.displayName}</p>
+                  <p className="text-xs text-[#5A5A40]/60 truncate">Administrador</p>
+                </div>
+              </div>
+              <button 
+                onClick={handleLogout}
+                className="w-full flex items-center gap-3 px-6 py-3 text-red-500 hover:bg-red-50 rounded-xl transition-colors"
+              >
+                <LogOut className="w-4 h-4" />
+                Sair
+              </button>
+            </>
+          ) : (
+            <button 
+              onClick={handleLogin}
+              className="w-full flex items-center gap-3 px-6 py-3 bg-[#5A5A40] text-white rounded-xl hover:bg-[#4a4a35] transition-colors font-bold text-sm justify-center"
+            >
+              <LogIn className="w-4 h-4" />
+              Acesso Administrativo
+            </button>
+          )}
         </div>
       </aside>
 
