@@ -123,19 +123,23 @@ export default function App() {
 
   // Firestore Listeners
   useEffect(() => {
+    console.log('Initializing Firestore listeners...');
     // Listeners now work for everyone (public read)
     const unsubOfficers = onSnapshot(collection(db, 'officers'), (snapshot) => {
+      console.log(`Loaded ${snapshot.docs.length} officers`);
       setOfficers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Officer)));
     }, (err) => {
-      // Only log if it's a real error, not just permission (though read is public now)
       console.error('Error fetching officers:', err);
+      toast.error('Erro ao carregar dados dos policiais. Verifique sua conexão.');
     });
 
     const unsubUnits = onSnapshot(collection(db, 'units'), (snapshot) => {
+      console.log(`Loaded ${snapshot.docs.length} units`);
       setUnits(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Unit)));
     }, (err) => console.error('Error fetching units:', err));
 
     const unsubTerms = onSnapshot(collection(db, 'searchTerms'), (snapshot) => {
+      console.log(`Loaded ${snapshot.docs.length} search terms`);
       setSearchTerms(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as SearchTerm)));
     }, (err) => console.error('Error fetching terms:', err));
 
@@ -260,6 +264,18 @@ export default function App() {
 
   // PDF Processing
   const processPDF = async (file: File) => {
+    console.log('Starting PDF processing for:', file.name);
+    console.log('Current data state:', {
+      officersCount: officers.length,
+      unitsCount: units.length,
+      termsCount: searchTerms.length
+    });
+
+    if (officers.length === 0 && units.length === 0 && searchTerms.length === 0) {
+      toast.error('Nenhum dado carregado do banco de dados para comparação.');
+      // We don't return here because maybe they just want to see if it processes at all
+    }
+
     setIsProcessing(true);
     setFileName(file.name);
     setResults([]);
@@ -276,6 +292,7 @@ export default function App() {
           const page = await pdf.getPage(i);
           const textContent = await page.getTextContent();
           const text = textContent.items.map((item: any) => item.str).join(' ');
+          const textLower = text.toLowerCase();
           
           setProgress(Math.round((i / numPages) * 100));
 
@@ -283,12 +300,15 @@ export default function App() {
           officers.forEach(off => {
             if (!off.name && !off.registration) return;
             
-            const nameMatch = off.name && text.includes(off.name);
-            const regMatch = off.registration && text.includes(off.registration);
+            const nameLower = off.name?.toLowerCase();
+            const regLower = off.registration?.toLowerCase();
+
+            const nameMatch = nameLower && textLower.includes(nameLower);
+            const regMatch = regLower && textLower.includes(regLower);
 
             if (nameMatch || regMatch) {
               const matchStr = nameMatch ? off.name : off.registration;
-              const index = text.indexOf(matchStr);
+              const index = textLower.indexOf((nameMatch ? nameLower : regLower) || '');
               const start = Math.max(0, index - 60);
               const end = Math.min(text.length, index + matchStr.length + 80);
               const context = text.substring(start, end).replace(/\s+/g, ' ').trim();
@@ -307,12 +327,15 @@ export default function App() {
           units.forEach(unit => {
             if (!unit.name) return;
             
-            const nameMatch = text.includes(unit.name);
-            const acronymMatch = unit.acronym && text.includes(unit.acronym);
+            const nameLower = unit.name.toLowerCase();
+            const acronymLower = unit.acronym?.toLowerCase();
+
+            const nameMatch = textLower.includes(nameLower);
+            const acronymMatch = acronymLower && textLower.includes(acronymLower);
 
             if (nameMatch || acronymMatch) {
               const matchStr = nameMatch ? unit.name : (unit.acronym || '');
-              const index = text.indexOf(matchStr);
+              const index = textLower.indexOf((nameMatch ? nameLower : acronymLower) || '');
               const start = Math.max(0, index - 60);
               const end = Math.min(text.length, index + matchStr.length + 80);
               const context = text.substring(start, end).replace(/\s+/g, ' ').trim();
@@ -332,7 +355,6 @@ export default function App() {
             if (!st.term) return;
             
             const termLower = st.term.toLowerCase();
-            const textLower = text.toLowerCase();
             
             if (textLower.includes(termLower)) {
               const index = textLower.indexOf(termLower);
@@ -356,10 +378,14 @@ export default function App() {
       }
 
       setResults(found);
-      toast.success(`Processamento concluído! ${found.length} identificações encontradas.`);
+      if (found.length === 0) {
+        toast.info('Nenhuma correspondência encontrada no PDF.');
+      } else {
+        toast.success(`Processamento concluído! ${found.length} identificações encontradas.`);
+      }
     } catch (error) {
-      console.error(error);
-      toast.error('Erro ao processar PDF.');
+      console.error('PDF Processing Error:', error);
+      toast.error('Erro ao processar PDF. Verifique se o arquivo é válido.');
     } finally {
       setIsProcessing(false);
     }
