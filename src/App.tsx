@@ -22,7 +22,8 @@ import {
   ChevronRight,
   Download,
   Filter,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Globe
 } from 'lucide-react';
 import { 
   auth, 
@@ -102,6 +103,7 @@ export default function App() {
   
   // Processing State
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isFetchingBG, setIsFetchingBG] = useState(false);
   const [results, setResults] = useState<IdentificationResult[]>([]);
   const [fileName, setFileName] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
@@ -117,9 +119,14 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
       setLoading(false);
+      
+      // If user is not admin and is on an admin tab, redirect to dashboard
+      if ((!u || u.email !== ADMIN_EMAIL) && (activeTab === 'database' || activeTab === 'settings')) {
+        setActiveTab('dashboard');
+      }
     });
     return unsubscribe;
-  }, []);
+  }, [activeTab]);
 
   // Firestore Listeners
   useEffect(() => {
@@ -150,13 +157,31 @@ export default function App() {
     };
   }, []);
 
+  const ADMIN_EMAIL = "chandooul@gmail.com";
+
   const handleLogin = async () => {
+    console.log('Attempting Google login...');
     try {
-      await signInWithPopup(auth, googleProvider);
-      toast.success('Login realizado com sucesso!');
-    } catch (error) {
-      console.error(error);
-      toast.error('Erro ao realizar login.');
+      const result = await signInWithPopup(auth, googleProvider);
+      const loggedUser = result.user;
+      console.log('Login successful for:', loggedUser.email);
+      
+      if (loggedUser.email !== ADMIN_EMAIL) {
+        console.warn('User is not an authorized administrator:', loggedUser.email);
+        toast.error('Acesso negado. Esta conta não possui privilégios administrativos.');
+        // Optionally sign out if not admin, or just keep them logged in but restricted
+      } else {
+        toast.success('Acesso administrativo concedido!');
+      }
+    } catch (error: any) {
+      console.error('Login error details:', error);
+      if (error.code === 'auth/popup-blocked') {
+        toast.error('O popup de login foi bloqueado pelo navegador. Por favor, permita popups para este site.');
+      } else if (error.code === 'auth/cancelled-popup-request') {
+        // User closed the popup, no need for a loud error
+      } else {
+        toast.error(`Erro ao realizar login: ${error.message}`);
+      }
     }
   };
 
@@ -300,17 +325,16 @@ export default function App() {
   };
 
   // PDF Processing
-  const processPDF = async (file: File) => {
-    console.log('Starting PDF processing for:', file.name);
+  const processPDF = async (data: ArrayBuffer, name: string) => {
+    console.log('Starting PDF processing for:', name);
     
     setIsProcessing(true);
-    setFileName(file.name);
+    setFileName(name);
     setResults([]);
     setProgress(0);
 
     try {
-      const arrayBuffer = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const pdf = await pdfjsLib.getDocument({ data }).promise;
       const numPages = pdf.numPages;
       const found: IdentificationResult[] = [];
 
@@ -418,9 +442,59 @@ export default function App() {
     }
   };
 
+  const fetchLatestBG = async () => {
+    setIsFetchingBG(true);
+    const toastId = toast.loading('Buscando último BG no site da PM-RN...');
+    
+    try {
+      const response = await fetch('/api/fetch-latest-bg');
+      const contentType = response.headers.get('content-type');
+      
+      if (!response.ok) {
+        if (contentType && contentType.includes('application/json')) {
+          const error = await response.json();
+          throw new Error(error.error || 'Erro ao buscar BG');
+        } else {
+          const text = await response.text();
+          console.error('Non-JSON error response:', text);
+          throw new Error(`Erro no servidor: ${response.status} ${response.statusText}`);
+        }
+      }
+      
+      if (!contentType || !contentType.includes('application/json')) {
+        throw new Error('O servidor retornou um formato inesperado (não JSON).');
+      }
+      
+      let latest;
+      try {
+        latest = await response.json();
+      } catch (jsonError) {
+        console.error('JSON parse error:', jsonError);
+        throw new Error('O servidor retornou um erro ao processar os dados (JSON inválido).');
+      }
+      
+      toast.loading(`Baixando: ${latest.title}...`, { id: toastId });
+      
+      const pdfResponse = await fetch(latest.url);
+      if (!pdfResponse.ok) throw new Error('Erro ao baixar o arquivo PDF.');
+      
+      const arrayBuffer = await pdfResponse.arrayBuffer();
+      toast.success('BG encontrado! Iniciando processamento...', { id: toastId });
+      
+      await processPDF(arrayBuffer, latest.title);
+    } catch (error: any) {
+      console.error(error);
+      toast.error(error.message || 'Erro ao buscar BG automaticamente.', { id: toastId });
+    } finally {
+      setIsFetchingBG(false);
+    }
+  };
+
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) processPDF(file);
+    if (file) {
+      file.arrayBuffer().then(data => processPDF(data, file.name));
+    }
   };
 
   if (loading) {
@@ -458,7 +532,7 @@ export default function App() {
             <span className="font-medium">Identificação</span>
           </button>
 
-          {user && (
+          {user && user.email === ADMIN_EMAIL && (
             <>
               <button
                 onClick={() => setActiveTab('database')}
@@ -495,7 +569,9 @@ export default function App() {
                 <img src={user.photoURL || ''} alt="" className="w-10 h-10 rounded-full border border-black/5" referrerPolicy="no-referrer" />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-semibold truncate">{user.displayName}</p>
-                  <p className="text-xs text-[#5A5A40]/60 truncate">Administrador</p>
+                  <p className="text-xs text-[#5A5A40]/60 truncate">
+                    {user.email === ADMIN_EMAIL ? 'Administrador' : 'Usuário'}
+                  </p>
                 </div>
               </div>
               <button 
@@ -529,9 +605,23 @@ export default function App() {
               exit={{ opacity: 0, x: -20 }}
               className="space-y-12"
             >
-              <header>
-                <h2 className="text-5xl font-serif font-light mb-4">Identificação</h2>
-                <p className="text-[#5A5A40] italic font-serif">Carregue o Boletim Geral para análise automatizada.</p>
+              <header className="flex items-end justify-between">
+                <div>
+                  <h2 className="text-5xl font-serif font-light mb-4">Identificação</h2>
+                  <p className="text-[#5A5A40] italic font-serif">Carregue o Boletim Geral para análise automatizada.</p>
+                </div>
+                <button
+                  onClick={fetchLatestBG}
+                  disabled={isFetchingBG || isProcessing}
+                  className="flex items-center gap-2 px-6 py-3 bg-[#5A5A40] text-white rounded-full hover:bg-[#4a4a35] transition-all shadow-lg shadow-[#5A5A40]/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isFetchingBG ? (
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : (
+                    <Globe className="w-5 h-5" />
+                  )}
+                  <span className="font-bold">Buscar BG da PM-RN</span>
+                </button>
               </header>
 
               {/* Upload Area */}
