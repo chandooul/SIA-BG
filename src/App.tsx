@@ -23,14 +23,18 @@ import {
   Download,
   Filter,
   FileSpreadsheet,
-  Globe
+  Globe,
+  Tag,
+  X,
+  User as UserIcon
 } from 'lucide-react';
 import { 
   auth, 
   db, 
   googleProvider, 
   OperationType, 
-  handleFirestoreError 
+  handleFirestoreError,
+  signInAnonymously
 } from './firebase';
 import { 
   signInWithPopup, 
@@ -46,7 +50,9 @@ import {
   doc, 
   query, 
   orderBy, 
-  onSnapshot 
+  onSnapshot,
+  where,
+  setDoc
 } from 'firebase/firestore';
 import * as pdfjsLib from 'pdfjs-dist';
 import { Toaster, toast } from 'sonner';
@@ -68,6 +74,10 @@ interface Officer {
   registration: string;
   unit: string;
   rank?: string;
+  password?: string;
+  isFirstAccess?: boolean;
+  keywords?: string[];
+  role?: 'admin' | 'user';
 }
 
 interface Unit {
@@ -92,8 +102,10 @@ interface IdentificationResult {
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
+  const [loggedInOfficer, setLoggedInOfficer] = useState<Officer | null>(null);
+  const [showChangePassword, setShowChangePassword] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'database' | 'settings'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'database' | 'settings' | 'keywords'>('dashboard');
   const [dbTab, setDbTab] = useState<'officers' | 'units' | 'terms'>('officers');
   
   // Database State
@@ -109,7 +121,7 @@ export default function App() {
   const [progress, setProgress] = useState(0);
 
   // Form States
-  const [newOfficer, setNewOfficer] = useState({ name: '', registration: '', unit: '', rank: '' });
+  const [newOfficer, setNewOfficer] = useState({ name: '', registration: '', unit: '', rank: '', role: 'user' as 'admin' | 'user' });
   const [newUnit, setNewUnit] = useState({ name: '', acronym: '' });
   const [newTerm, setNewTerm] = useState({ term: '', category: '' });
   const [isBulkUploading, setIsBulkUploading] = useState(false);
@@ -121,10 +133,23 @@ export default function App() {
       setLoading(false);
       
       // If user is not admin and is on an admin tab, redirect to dashboard
-      if ((!u || u.email !== ADMIN_EMAIL) && (activeTab === 'database' || activeTab === 'settings')) {
+      const isAdmin = u?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin';
+      if (!isAdmin && (activeTab === 'database' || activeTab === 'settings')) {
         setActiveTab('dashboard');
       }
     });
+
+    // Check for saved officer session
+    const savedOfficer = localStorage.getItem('officer_session');
+    if (savedOfficer) {
+      try {
+        const parsed = JSON.parse(savedOfficer);
+        setLoggedInOfficer(parsed);
+      } catch (e) {
+        localStorage.removeItem('officer_session');
+      }
+    }
+
     return unsubscribe;
   }, [activeTab]);
 
@@ -187,10 +212,101 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      if (user) {
+        await signOut(auth);
+      }
+      if (loggedInOfficer) {
+        setLoggedInOfficer(null);
+        localStorage.removeItem('officer_session');
+      }
       toast.success('Sessão encerrada.');
     } catch (error) {
       console.error(error);
+    }
+  };
+
+  const handleOfficerLogin = async (registration: string, passwordInput: string) => {
+    try {
+      const q = query(collection(db, 'officers'), where('registration', '==', registration));
+      const snapshot = await getDocs(q);
+      
+      if (snapshot.empty) {
+        toast.error('Matrícula não encontrada no banco de dados.');
+        return;
+      }
+
+      const officerDoc = snapshot.docs[0];
+      const officerData = { id: officerDoc.id, ...officerDoc.data() } as Officer;
+
+      // Check password (if not set, use registration as default)
+      const correctPassword = officerData.password || officerData.registration;
+      
+      if (passwordInput === correctPassword) {
+        try {
+          // Try to sign in anonymously to Firebase to gain "Authenticated" status in rules
+          const authResult = await signInAnonymously(auth);
+          
+          // Cache the role in the 'users' collection for the security rules
+          await setDoc(doc(db, 'users', authResult.user.uid), { 
+            role: officerData.role || 'user',
+            officerId: officerData.id,
+            registration: officerData.registration
+          });
+        } catch (authErr: any) {
+          console.warn('Firebase Auth failed:', authErr);
+          if (authErr.code === 'auth/admin-restricted-operation') {
+            toast.error('Atenção: O login anônimo está desativado no Firebase. Algumas funções administrativas e de troca de senha podem não funcionar.', { duration: 6000 });
+          }
+        }
+
+        setLoggedInOfficer(officerData);
+        localStorage.setItem('officer_session', JSON.stringify(officerData));
+        toast.success(`Bem-vindo, ${officerData.name}!`);
+      } else {
+        toast.error('Senha incorreta.');
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error('Erro ao realizar login.');
+    }
+  };
+
+  const handlePasswordChange = async (newPassword: string) => {
+    if (!loggedInOfficer) return;
+    
+    try {
+      const officerRef = doc(db, 'officers', loggedInOfficer.id);
+      await setDoc(officerRef, { 
+        ...loggedInOfficer, 
+        password: newPassword, 
+        isFirstAccess: false 
+      }, { merge: true });
+      
+      const updatedOfficer = { ...loggedInOfficer, password: newPassword, isFirstAccess: false };
+      setLoggedInOfficer(updatedOfficer);
+      localStorage.setItem('officer_session', JSON.stringify(updatedOfficer));
+      setShowChangePassword(false);
+      toast.success('Senha alterada com sucesso!');
+    } catch (err) {
+      console.error(err);
+      toast.error('Erro ao alterar senha.');
+    }
+  };
+
+  const updateKeywords = async (keywords: string[]) => {
+    if (!loggedInOfficer) return;
+    
+    try {
+      const officerRef = doc(db, 'officers', loggedInOfficer.id);
+      await setDoc(officerRef, { keywords }, { merge: true });
+      
+      const updatedOfficer = { ...loggedInOfficer, keywords };
+      setLoggedInOfficer(updatedOfficer);
+      localStorage.setItem('officer_session', JSON.stringify(updatedOfficer));
+      toast.success('Palavras-chave atualizadas!');
+    } catch (err) {
+      console.error(err);
+      toast.error('Erro ao atualizar palavras-chave.');
     }
   };
 
@@ -198,9 +314,15 @@ export default function App() {
   const addOfficer = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await addDoc(collection(db, 'officers'), newOfficer);
-      setNewOfficer({ name: '', registration: '', unit: '', rank: '' });
-      toast.success('Policial adicionado!');
+      const officerData = { 
+        ...newOfficer, 
+        password: newOfficer.registration, 
+        isFirstAccess: true,
+        keywords: [] 
+      };
+      await addDoc(collection(db, 'officers'), officerData);
+      setNewOfficer({ name: '', registration: '', unit: '', rank: '', role: 'user' });
+      toast.success('Policial adicionado! Senha inicial é a matrícula.');
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'officers');
     }
@@ -270,7 +392,13 @@ export default function App() {
 
         if (officerData.name && officerData.registration && officerData.unit) {
           try {
-            await addDoc(collection(db, 'officers'), officerData);
+            await addDoc(collection(db, 'officers'), {
+              ...officerData,
+              password: officerData.registration,
+              isFirstAccess: true,
+              keywords: [],
+              role: 'user'
+            });
             successCount++;
           } catch (err) {
             errorCount++;
@@ -422,6 +550,28 @@ export default function App() {
               });
             }
           });
+
+          // Search for User Keywords
+          if (loggedInOfficer?.keywords) {
+            loggedInOfficer.keywords.forEach(kw => {
+              if (!kw) return;
+              const kwLower = kw.toLowerCase();
+              if (textLower.includes(kwLower)) {
+                const index = textLower.indexOf(kwLower);
+                const start = Math.max(0, index - 60);
+                const end = Math.min(text.length, index + kw.length + 80);
+                const context = text.substring(start, end).replace(/\s+/g, ' ').trim();
+                
+                found.push({
+                  type: 'term',
+                  match: `Palavra-chave: ${kw}`,
+                  context: `...${context}...`,
+                  page: i,
+                  metadata: { term: kw, category: 'Pessoal' }
+                });
+              }
+            });
+          }
         } catch (pageError) {
           console.error(`Erro ao processar página ${i}:`, pageError);
           continue;
@@ -505,9 +655,20 @@ export default function App() {
     );
   }
 
+  if (!user && !loggedInOfficer) {
+    return <LoginScreen onLogin={handleOfficerLogin} onAdminLogin={handleLogin} />;
+  }
+
   return (
     <div className="min-h-screen bg-[#f5f5f0] font-sans text-[#1a1a1a]">
       <Toaster position="top-right" />
+      
+      {showChangePassword && (
+        <ChangePasswordModal 
+          onSave={handlePasswordChange} 
+          onCancel={() => setShowChangePassword(false)}
+        />
+      )}
       
       {/* Sidebar */}
       <aside className="fixed left-0 top-0 bottom-0 w-72 bg-white border-r border-black/5 p-8 flex flex-col">
@@ -529,10 +690,25 @@ export default function App() {
             )}
           >
             <Search className="w-5 h-5" />
-            <span className="font-medium">Identificação</span>
+            <span className="font-medium">Verificação BG</span>
           </button>
 
-          {user && user.email === ADMIN_EMAIL && (
+          {loggedInOfficer && (
+            <button
+              onClick={() => setActiveTab('keywords')}
+              className={cn(
+                "w-full flex items-center gap-4 px-6 py-4 rounded-2xl transition-all duration-200",
+                activeTab === 'keywords' 
+                  ? "bg-[#5A5A40] text-white shadow-lg shadow-[#5A5A40]/20" 
+                  : "text-[#5A5A40]/60 hover:bg-[#f5f5f0] hover:text-[#5A5A40]"
+              )}
+            >
+              <Tag className="w-5 h-5" />
+              <span className="font-medium">Minhas Palavras-Chave</span>
+            </button>
+          )}
+
+          {(user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') && (
             <>
               <button
                 onClick={() => setActiveTab('database')}
@@ -563,17 +739,29 @@ export default function App() {
         </nav>
 
         <div className="pt-8 border-t border-black/5">
-          {user ? (
+          {user || loggedInOfficer ? (
             <>
-              <div className="flex items-center gap-3 mb-6 px-2">
-                <img src={user.photoURL || ''} alt="" className="w-10 h-10 rounded-full border border-black/5" referrerPolicy="no-referrer" />
+              <button 
+                onClick={() => {
+                  setActiveTab('settings');
+                  if (loggedInOfficer) setShowChangePassword(true);
+                }}
+                className="w-full flex items-center gap-3 mb-6 px-2 hover:bg-[#f5f5f0] p-2 rounded-2xl transition-colors text-left"
+              >
+                {user && user.photoURL ? (
+                  <img src={user.photoURL} alt="" className="w-10 h-10 rounded-full border border-black/5" referrerPolicy="no-referrer" />
+                ) : (
+                  <div className="w-10 h-10 rounded-full bg-[#5A5A40] flex items-center justify-center text-white font-bold shrink-0">
+                    {user ? user.displayName?.charAt(0) : loggedInOfficer?.name.charAt(0)}
+                  </div>
+                )}
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold truncate">{user.displayName}</p>
+                  <p className="text-sm font-semibold truncate text-[#1a1a1a]">{user ? user.displayName : loggedInOfficer?.name}</p>
                   <p className="text-xs text-[#5A5A40]/60 truncate">
-                    {user.email === ADMIN_EMAIL ? 'Administrador' : 'Usuário'}
+                    {(user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') ? 'Administrador' : 'Trocar Senha'}
                   </p>
                 </div>
-              </div>
+              </button>
               <button 
                 onClick={handleLogout}
                 className="w-full flex items-center gap-3 px-6 py-3 text-red-500 hover:bg-red-50 rounded-xl transition-colors"
@@ -596,6 +784,13 @@ export default function App() {
 
       {/* Main Content */}
       <main className="ml-72 p-12 max-w-7xl mx-auto">
+        <div className="flex justify-end mb-8">
+          <div className="flex items-center gap-2 text-[#5A5A40]/60 text-sm font-medium">
+            <UserIcon className="w-4 h-4" />
+            <span>Olá, <span className="text-[#5A5A40] font-bold">{user ? user.displayName : loggedInOfficer?.name}</span></span>
+          </div>
+        </div>
+
         <AnimatePresence mode="wait">
           {activeTab === 'dashboard' && (
             <motion.div 
@@ -607,7 +802,7 @@ export default function App() {
             >
               <header className="flex items-end justify-between">
                 <div>
-                  <h2 className="text-5xl font-serif font-light mb-4">Identificação</h2>
+                  <h2 className="text-5xl font-serif font-light mb-4">Verificação BG</h2>
                   <p className="text-[#5A5A40] italic font-serif">Carregue o Boletim Geral para análise automatizada.</p>
                 </div>
                 <button
@@ -717,6 +912,137 @@ export default function App() {
                   </div>
                 </div>
               )}
+
+              {/* User Keywords Management */}
+              {loggedInOfficer && (
+                <div className="bg-white rounded-[40px] p-10 border border-black/5 shadow-sm space-y-8">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-3xl font-serif font-light">Minhas Palavras-Chave</h3>
+                      <p className="text-[#5A5A40]/60 italic">Cadastre termos específicos para busca automática nos boletins.</p>
+                    </div>
+                    <div className="w-12 h-12 bg-[#5A5A40]/5 rounded-2xl flex items-center justify-center">
+                      <Search className="text-[#5A5A40] w-6 h-6" />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-3">
+                    {loggedInOfficer.keywords?.map((kw, i) => (
+                      <div key={i} className="flex items-center gap-2 px-4 py-2 bg-[#f5f5f0] rounded-full text-sm font-bold text-[#5A5A40]">
+                        {kw}
+                        <button 
+                          onClick={() => updateKeywords(loggedInOfficer.keywords?.filter((_, idx) => idx !== i) || [])}
+                          className="hover:text-red-500 transition-colors"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                    <button 
+                      onClick={() => {
+                        const term = prompt('Digite a nova palavra-chave:');
+                        if (term) updateKeywords([...(loggedInOfficer.keywords || []), term]);
+                      }}
+                      className="flex items-center gap-2 px-4 py-2 border-2 border-dashed border-[#5A5A40]/20 rounded-full text-sm font-bold text-[#5A5A40]/60 hover:border-[#5A5A40]/40 hover:text-[#5A5A40] transition-all"
+                    >
+                      <Plus className="w-3 h-3" />
+                      Adicionar Termo
+                    </button>
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          )}
+
+          {activeTab === 'keywords' && loggedInOfficer && (
+            <motion.div 
+              key="keywords"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="space-y-12"
+            >
+              <header>
+                <h2 className="text-5xl font-serif font-light mb-4">Minhas Palavras-Chave</h2>
+                <p className="text-[#5A5A40] italic font-serif">Gerencie os termos que o sistema deve identificar para você.</p>
+              </header>
+
+              <div className="bg-white rounded-[40px] p-12 border border-black/5">
+                <div className="max-w-2xl">
+                  <h3 className="text-2xl font-serif mb-6">Suas Palavras-Chave</h3>
+                  <p className="text-[#5A5A40]/60 mb-8">
+                    Adicione termos como seu nome, matrícula ou unidades de interesse. 
+                    O sistema destacará estes termos sempre que encontrá-los em um Boletim Geral.
+                  </p>
+
+                  <div className="flex gap-4 mb-8">
+                    <input 
+                      type="text"
+                      placeholder="Adicionar novo termo..."
+                      className="flex-1 bg-[#f5f5f0] border-none rounded-2xl px-6 py-4 focus:ring-2 focus:ring-[#5A5A40]/20"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          const val = e.currentTarget.value.trim();
+                          if (val) {
+                            const current = loggedInOfficer.keywords || [];
+                            if (!current.includes(val)) {
+                              updateKeywords([...current, val]);
+                              e.currentTarget.value = '';
+                            } else {
+                              toast.error('Este termo já existe.');
+                            }
+                          }
+                        }
+                      }}
+                    />
+                    <button 
+                      onClick={(e) => {
+                        const input = e.currentTarget.previousElementSibling as HTMLInputElement;
+                        const val = input.value.trim();
+                        if (val) {
+                          const current = loggedInOfficer.keywords || [];
+                          if (!current.includes(val)) {
+                            updateKeywords([...current, val]);
+                            input.value = '';
+                          } else {
+                            toast.error('Este termo já existe.');
+                          }
+                        }
+                      }}
+                      className="bg-[#5A5A40] text-white px-8 rounded-2xl font-bold hover:bg-[#4a4a35] transition-all"
+                    >
+                      Adicionar
+                    </button>
+                  </div>
+
+                  <div className="flex flex-wrap gap-3">
+                    {(loggedInOfficer.keywords || []).length > 0 ? (
+                      loggedInOfficer.keywords?.map((kw, idx) => (
+                        <div 
+                          key={idx}
+                          className="flex items-center gap-2 bg-[#f5f5f0] text-[#5A5A40] px-4 py-2 rounded-full border border-[#5A5A40]/10 group"
+                        >
+                          <span className="font-medium">{kw}</span>
+                          <button 
+                            onClick={() => {
+                              const current = loggedInOfficer.keywords || [];
+                              updateKeywords(current.filter(k => k !== kw));
+                            }}
+                            className="p-1 hover:text-red-500 transition-colors"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="w-full py-12 text-center border-2 border-dashed border-black/5 rounded-[30px]">
+                        <Tag className="w-12 h-12 text-[#5A5A40]/10 mx-auto mb-4" />
+                        <p className="text-[#5A5A40]/40 italic">Nenhuma palavra-chave cadastrada.</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
             </motion.div>
           )}
 
@@ -776,7 +1102,7 @@ export default function App() {
                         </button>
                       </div>
                     </div>
-                    <form onSubmit={addOfficer} className="grid grid-cols-1 md:grid-cols-4 gap-6 items-end">
+                    <form onSubmit={addOfficer} className="grid grid-cols-1 md:grid-cols-5 gap-6 items-end">
                       <div className="space-y-2">
                         <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Nome Completo</label>
                         <input 
@@ -806,6 +1132,17 @@ export default function App() {
                           className="w-full bg-[#f5f5f0] border-none rounded-2xl px-6 py-4 focus:ring-2 focus:ring-[#5A5A40]/20"
                           placeholder="Ex: 1º BPM"
                         />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Nível de Acesso</label>
+                        <select 
+                          value={newOfficer.role}
+                          onChange={e => setNewOfficer({...newOfficer, role: e.target.value as 'admin' | 'user'})}
+                          className="w-full bg-[#f5f5f0] border-none rounded-2xl px-6 py-4 focus:ring-2 focus:ring-[#5A5A40]/20 appearance-none"
+                        >
+                          <option value="user">Usuário Comum</option>
+                          <option value="admin">Administrador</option>
+                        </select>
                       </div>
                       <button type="submit" className="bg-[#5A5A40] text-white rounded-2xl py-4 flex items-center justify-center gap-2 hover:bg-[#4a4a35] transition-colors">
                         <Plus className="w-5 h-5" />
@@ -882,6 +1219,7 @@ export default function App() {
                           <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Nome</th>
                           <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Matrícula</th>
                           <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Unidade</th>
+                          <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Acesso</th>
                         </>
                       )}
                       {dbTab === 'units' && (
@@ -905,6 +1243,14 @@ export default function App() {
                         <td className="px-8 py-6 font-medium">{off.name}</td>
                         <td className="px-8 py-6 font-mono text-sm">{off.registration}</td>
                         <td className="px-8 py-6">{off.unit}</td>
+                        <td className="px-8 py-6">
+                          <span className={cn(
+                            "px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest",
+                            off.role === 'admin' ? "bg-[#5A5A40] text-white" : "bg-[#f5f5f0] text-[#5A5A40]/60"
+                          )}>
+                            {off.role === 'admin' ? 'Admin' : 'Usuário'}
+                          </span>
+                        </td>
                         <td className="px-8 py-6 text-right">
                           <button onClick={() => deleteItem('officers', off.id)} className="p-2 text-red-400 hover:text-red-600 transition-colors">
                             <Trash2 className="w-5 h-5" />
@@ -979,6 +1325,24 @@ export default function App() {
                 </div>
 
                 <div className="bg-white rounded-[40px] p-10 border border-black/5">
+                  <h3 className="text-2xl font-serif mb-8">Segurança</h3>
+                  <div className="space-y-6">
+                    <div className="flex items-center justify-between py-4 border-b border-black/5">
+                      <div>
+                        <p className="font-bold">Alterar Senha</p>
+                        <p className="text-sm text-[#5A5A40]/60">Atualize sua senha de acesso ao sistema</p>
+                      </div>
+                      <button 
+                        onClick={() => setShowChangePassword(true)}
+                        className="px-6 py-3 bg-[#f5f5f0] text-[#5A5A40] font-bold rounded-xl hover:bg-[#5A5A40] hover:text-white transition-all"
+                      >
+                        Alterar
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-[40px] p-10 border border-black/5">
                   <h3 className="text-2xl font-serif mb-8">Sobre o Sistema</h3>
                   <div className="space-y-4 text-[#5A5A40]">
                     <p><strong>Versão:</strong> 1.0.0-alpha</p>
@@ -993,6 +1357,155 @@ export default function App() {
           )}
         </AnimatePresence>
       </main>
+    </div>
+  );
+}
+
+// --- Components ---
+
+function LoginScreen({ onLogin, onAdminLogin }: { onLogin: (reg: string, pass: string) => void, onAdminLogin: () => void }) {
+  const [registration, setRegistration] = useState('');
+  const [password, setPassword] = useState('');
+
+  return (
+    <div className="min-h-screen bg-[#f5f5f0] flex items-center justify-center p-6">
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="w-full max-w-md bg-white rounded-[40px] p-12 shadow-xl shadow-black/5 border border-black/5"
+      >
+        <div className="flex flex-col items-center mb-10">
+          <div className="w-16 h-16 bg-[#5A5A40] rounded-2xl flex items-center justify-center mb-6">
+            <FileText className="text-white w-8 h-8" />
+          </div>
+          <h1 className="text-4xl font-serif font-light tracking-tight mb-2">SIA-BG</h1>
+          <p className="text-[#5A5A40]/60 italic font-serif text-center">Sistema de Identificação Automatizada</p>
+        </div>
+
+        <form 
+          onSubmit={(e) => {
+            e.preventDefault();
+            onLogin(registration, password);
+          }}
+          className="space-y-6"
+        >
+          <div className="space-y-2">
+            <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Matrícula</label>
+            <input 
+              required
+              value={registration}
+              onChange={e => setRegistration(e.target.value)}
+              className="w-full bg-[#f5f5f0] border-none rounded-2xl px-6 py-4 focus:ring-2 focus:ring-[#5A5A40]/20 transition-all"
+              placeholder="Digite sua matrícula"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Senha</label>
+            <input 
+              required
+              type="password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              className="w-full bg-[#f5f5f0] border-none rounded-2xl px-6 py-4 focus:ring-2 focus:ring-[#5A5A40]/20 transition-all"
+              placeholder="Sua senha"
+            />
+            <p className="text-[10px] text-[#5A5A40]/40 ml-2 italic">Primeiro acesso? Use sua matrícula como senha.</p>
+          </div>
+
+          <button 
+            type="submit"
+            className="w-full bg-[#5A5A40] text-white rounded-2xl py-5 font-bold shadow-lg shadow-[#5A5A40]/20 hover:bg-[#4a4a35] transition-all active:scale-[0.98]"
+          >
+            Entrar no Sistema
+          </button>
+        </form>
+
+        <div className="mt-10 pt-8 border-t border-black/5">
+          <button 
+            onClick={onAdminLogin}
+            className="w-full flex items-center justify-center gap-2 text-sm font-bold text-[#5A5A40]/60 hover:text-[#5A5A40] transition-colors"
+          >
+            <LogIn className="w-4 h-4" />
+            Acesso Administrativo (Google)
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+function ChangePasswordModal({ onSave, onCancel }: { onSave: (pass: string) => void, onCancel: () => void }) {
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPassword !== confirmPassword) {
+      toast.error('As senhas não coincidem.');
+      return;
+    }
+    if (newPassword.length < 4) {
+      toast.error('A senha deve ter pelo menos 4 caracteres.');
+      return;
+    }
+    onSave(newPassword);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-6">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.9 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="w-full max-w-md bg-white rounded-[40px] p-12 shadow-2xl border border-black/5"
+      >
+        <div className="flex flex-col items-center mb-8">
+          <div className="w-16 h-16 bg-blue-50 rounded-2xl flex items-center justify-center mb-6">
+            <CheckCircle2 className="text-blue-600 w-8 h-8" />
+          </div>
+          <h2 className="text-3xl font-serif font-light mb-2">Alterar Senha</h2>
+          <p className="text-[#5A5A40]/60 text-center">Defina uma nova senha segura para sua conta.</p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <div className="space-y-2">
+            <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Nova Senha</label>
+            <input 
+              required
+              type="password"
+              value={newPassword}
+              onChange={e => setNewPassword(e.target.value)}
+              className="w-full bg-[#f5f5f0] border-none rounded-2xl px-6 py-4 focus:ring-2 focus:ring-[#5A5A40]/20"
+              placeholder="Mínimo 4 caracteres"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Confirmar Senha</label>
+            <input 
+              required
+              type="password"
+              value={confirmPassword}
+              onChange={e => setConfirmPassword(e.target.value)}
+              className="w-full bg-[#f5f5f0] border-none rounded-2xl px-6 py-4 focus:ring-2 focus:ring-[#5A5A40]/20"
+              placeholder="Repita a nova senha"
+            />
+          </div>
+
+          <button 
+            type="submit"
+            className="w-full bg-[#5A5A40] text-white rounded-2xl py-5 font-bold shadow-lg shadow-[#5A5A40]/20 hover:bg-[#4a4a35] transition-all"
+          >
+            Salvar Nova Senha
+          </button>
+          
+          <button 
+            type="button"
+            onClick={onCancel}
+            className="w-full text-sm font-bold text-[#5A5A40]/40 hover:text-red-500 transition-colors"
+          >
+            Cancelar
+          </button>
+        </form>
+      </motion.div>
     </div>
   );
 }

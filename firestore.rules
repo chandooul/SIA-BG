@@ -30,9 +30,11 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isAuthenticated() &&
-        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
-          (request.auth.token.email == "chandooul@gmail.com" && request.auth.token.email_verified == true));
+      return isAuthenticated() && (
+        (request.auth.token.email == "chandooul@gmail.com" && request.auth.token.email_verified == true) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+      );
     }
 
     function hasRequiredFields(fields) {
@@ -42,27 +44,34 @@ service cloud.firestore {
     function isValidOfficer(data) {
       return data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
              data.registration is string && data.registration.size() > 0 && data.registration.size() < 50 &&
-             data.unit is string && data.unit.size() > 0;
+             data.unit is string && data.unit.size() > 0 && data.unit.size() < 200 &&
+             (!('password' in data) || (data.password is string && data.password.size() < 100)) &&
+             (!('keywords' in data) || (data.keywords is list && data.keywords.size() < 50));
     }
 
     function isValidUnit(data) {
-      return data.name is string && data.name.size() > 0 && data.name.size() < 200;
+      return data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
+             (!('acronym' in data) || (data.acronym is string && data.acronym.size() < 50));
     }
 
     function isValidSearchTerm(data) {
-      return data.term is string && data.term.size() > 0 && data.term.size() < 200;
+      return data.term is string && data.term.size() > 0 && data.term.size() < 200 &&
+             (!('category' in data) || (data.category is string && data.category.size() < 100));
     }
 
     // Rules
     match /users/{userId} {
-      allow read: if isAuthenticated() && request.auth.uid == userId;
-      allow write: if isAdmin();
+      // Allow users to manage their own profile/role cache
+      allow read, write: if isAuthenticated() && request.auth.uid == userId;
+      allow read, write: if isAdmin();
     }
 
     match /officers/{officerId} {
       allow read: if true;
-      allow create, update: if isAdmin() && isValidOfficer(request.resource.data);
-      allow delete: if isAdmin();
+      // Allow users to update their own password, first access flag, and keywords
+      allow update: if isAdmin() || 
+        (isAuthenticated() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['password', 'isFirstAccess', 'keywords']));
+      allow create, delete: if isAdmin();
     }
 
     match /units/{unitId} {

@@ -8,7 +8,11 @@
         "name": { "type": "string", "description": "Nome completo do policial" },
         "registration": { "type": "string", "description": "Matrícula do policial" },
         "unit": { "type": "string", "description": "Unidade onde está lotado" },
-        "rank": { "type": "string", "description": "Posto ou Graduação" }
+        "rank": { "type": "string", "description": "Posto ou Graduação" },
+        "password": { "type": "string", "description": "Senha de acesso" },
+        "isFirstAccess": { "type": "boolean", "description": "Indica se é o primeiro acesso" },
+        "keywords": { "type": "array", "items": { "type": "string" }, "description": "Palavras-chave personalizadas do usuário" },
+        "role": { "type": "string", "enum": ["admin", "user"], "description": "Nível de acesso do usuário" }
       },
       "required": ["name", "registration", "unit"]
     },
