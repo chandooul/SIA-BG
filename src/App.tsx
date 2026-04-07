@@ -26,11 +26,18 @@ import {
   Globe,
   Tag,
   X,
-  User as UserIcon
+  User as UserIcon,
+  Key,
+  ShieldCheck
 } from 'lucide-react';
 import { 
   auth, 
   db, 
+  storage,
+  ref,
+  uploadBytes,
+  getDownloadURL,
+  deleteObject,
   googleProvider, 
   OperationType, 
   handleFirestoreError,
@@ -115,9 +122,11 @@ export default function App() {
   
   // Processing State
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isFetchingBG, setIsFetchingBG] = useState(false);
   const [results, setResults] = useState<IdentificationResult[]>([]);
+  const [fullText, setFullText] = useState<{page: number, text: string}[]>([]);
+  const [userSpecificResults, setUserSpecificResults] = useState<any[]>([]);
   const [fileName, setFileName] = useState<string | null>(null);
+  const [uploadedAt, setUploadedAt] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
 
   // Form States
@@ -175,10 +184,27 @@ export default function App() {
       setSearchTerms(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as SearchTerm)));
     }, (err) => console.error('Error fetching terms:', err));
 
+    const unsubBG = onSnapshot(doc(db, 'bg_analysis', 'latest'), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setResults(data.results || []);
+        setFullText(data.fullText || []);
+        setFileName(data.fileName || null);
+        setPdfUrl(data.pdfUrl || null);
+        setUploadedAt(data.uploadedAt || null);
+        console.log('Latest BG analysis loaded from Firestore');
+      }
+    }, (err) => {
+      console.error('Error fetching latest BG:', err);
+      toast.error('Erro ao buscar o último BG. Verifique as permissões.');
+      handleFirestoreError(err, OperationType.GET, 'bg_analysis/latest');
+    });
+
     return () => {
       unsubOfficers();
       unsubUnits();
       unsubTerms();
+      unsubBG();
     };
   }, []);
 
@@ -421,7 +447,30 @@ export default function App() {
     }
   };
 
+  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+
   // Helper for flexible matching
+  const normalizeText = (text: string) => {
+    if (!text) return '';
+    return text
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "") // Remove accents
+      .replace(/\s+/g, ' ')           // Simplify whitespace
+      .trim();
+  };
+
+  const normalizeTextFuzzy = (text: string) => {
+    if (!text) return '';
+    return text
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "") // Remove accents
+      .replace(/\s+/g, '')            // Remove ALL whitespace
+      .trim();
+  };
+
   const getRegistrationVariations = (reg: string) => {
     const nums = reg.replace(/\D/g, '');
     if (!nums) return [reg.toLowerCase()];
@@ -453,41 +502,175 @@ export default function App() {
   };
 
   // PDF Processing
-  const processPDF = async (data: ArrayBuffer, name: string) => {
+  // Client-side search for user-specific keywords and identifiers
+  useEffect(() => {
+    if (!loggedInOfficer) {
+      setUserSpecificResults([]);
+      return;
+    }
+
+    const personalResults: any[] = [];
+    
+    // 1. Check global results for matches with current user (Cross-referencing)
+    results.forEach(res => {
+      if (res.type === 'officer' && res.metadata) {
+        const isMatch = res.metadata.registration === loggedInOfficer.registration || 
+                        res.metadata.name === loggedInOfficer.name;
+        if (isMatch) {
+          personalResults.push({
+            ...res,
+            label: 'Identificado via Banco de Dados'
+          });
+        }
+      }
+      if (res.type === 'unit' && res.match === loggedInOfficer.unit) {
+        personalResults.push({
+          ...res,
+          label: 'Sua Unidade Identificada'
+        });
+      }
+    });
+
+    // 2. Search fullText for keywords (to catch things not in global results or newly added)
+    if (fullText.length) {
+      const keywords = loggedInOfficer.keywords || [];
+      const identifiers = [
+        loggedInOfficer.registration,
+        loggedInOfficer.name
+      ].filter(Boolean);
+
+      fullText.forEach(pageData => {
+        const text = pageData.text;
+        const textNormalized = normalizeText(text);
+        const textFuzzy = normalizeTextFuzzy(text);
+
+        // Search for keywords
+        keywords.forEach(kw => {
+          if (!kw) return;
+          const kwNormalized = normalizeText(kw);
+          const kwFuzzy = normalizeTextFuzzy(kw);
+          
+          const hasMatch = textNormalized.includes(kwNormalized) || 
+                          (kwFuzzy.length > 4 && textFuzzy.includes(kwFuzzy));
+
+          if (hasMatch) {
+            const index = textNormalized.indexOf(kwNormalized);
+            const start = Math.max(0, index - 60);
+            const end = Math.min(text.length, index + kw.length + 80);
+            const context = text.substring(start, end).replace(/\s+/g, ' ').trim();
+            
+            personalResults.push({
+              type: 'personal',
+              match: kw,
+              context: context ? `...${context}...` : 'Menção encontrada no texto.',
+              page: pageData.page,
+              label: 'Palavra-chave Pessoal'
+            });
+          }
+        });
+
+        // Search for name and registration (if not already found in global results)
+        identifiers.forEach(id => {
+          if (!id) return;
+          const idNormalized = normalizeText(id);
+          const idFuzzy = normalizeTextFuzzy(id);
+          
+          const hasMatch = textNormalized.includes(idNormalized) || 
+                          (idFuzzy.length > 4 && textFuzzy.includes(idFuzzy));
+
+          if (hasMatch) {
+            const index = textNormalized.indexOf(idNormalized);
+            const start = Math.max(0, index - 60);
+            const end = Math.min(text.length, index + id.length + 80);
+            const context = text.substring(start, end).replace(/\s+/g, ' ').trim();
+            
+            personalResults.push({
+              type: 'identity',
+              match: id,
+              context: context ? `...${context}...` : 'Menção encontrada no texto.',
+              page: pageData.page,
+              label: id === loggedInOfficer.registration ? 'Sua Matrícula' : 'Seu Nome'
+            });
+          }
+        });
+      });
+    }
+
+    // Remove duplicates (if something was found in both global results and keywords)
+    const uniqueResults = personalResults.filter((res, index, self) =>
+      index === self.findIndex((t) => (
+        t.match === res.match && t.page === res.page && t.context === res.context
+      ))
+    );
+
+    setUserSpecificResults(uniqueResults);
+  }, [results, fullText, loggedInOfficer?.keywords, loggedInOfficer?.registration, loggedInOfficer?.name, loggedInOfficer?.unit]);
+
+  const processPDF = async (data: ArrayBuffer, name: string, append = false) => {
     console.log('Starting PDF processing for:', name);
     
     setIsProcessing(true);
-    setFileName(name);
-    setResults([]);
+    setFileName(prev => append && prev ? `${prev} + ${name}` : name);
+    if (!append) {
+      setResults([]);
+      setFullText([]);
+    }
     setProgress(0);
 
     try {
+      const blob = new Blob([data], { type: 'application/pdf' });
+      setPdfBlob(blob);
+      
+      // Delete previous file if it exists and we're not appending
+      if (pdfUrl && !append) {
+        try {
+          const oldFileRef = ref(storage, pdfUrl);
+          await deleteObject(oldFileRef);
+          console.log('Previous PDF deleted from Storage');
+        } catch (deleteError) {
+          console.warn('Could not delete previous PDF (it might have been already deleted):', deleteError);
+        }
+      }
+
+      // Upload to Firebase Storage
+      const storageRef = ref(storage, `bg_files/${name}`);
+      const uploadResult = await uploadBytes(storageRef, blob);
+      const downloadUrl = await getDownloadURL(uploadResult.ref);
+      setPdfUrl(downloadUrl);
+
       const pdf = await pdfjsLib.getDocument({ data }).promise;
       const numPages = pdf.numPages;
       const found: IdentificationResult[] = [];
+      const pagesText: {page: number, text: string}[] = [];
 
       for (let i = 1; i <= numPages; i++) {
         try {
           const page = await pdf.getPage(i);
           const textContent = await page.getTextContent();
           const text = textContent.items.map((item: any) => item.str).join(' ');
-          const textLower = text.toLowerCase();
+          const textNormalized = normalizeText(text);
+          const textFuzzy = normalizeTextFuzzy(text);
           
+          pagesText.push({ page: i, text });
           setProgress(Math.round((i / numPages) * 100));
 
           // Search for Officers
           officers.forEach(off => {
             if (!off.name && !off.registration) return;
             
-            const nameLower = off.name?.toLowerCase();
-            const regVariations = getRegistrationVariations(off.registration);
+            const nameNormalized = normalizeText(off.name);
+            const nameFuzzy = normalizeTextFuzzy(off.name);
+            const regVariations = getRegistrationVariations(off.registration).map(v => normalizeText(v));
+            const regFuzzy = normalizeTextFuzzy(off.registration);
 
-            const nameMatch = nameLower && textLower.includes(nameLower);
-            const regMatch = regVariations.find(v => textLower.includes(v));
+            const nameMatch = (nameNormalized && textNormalized.includes(nameNormalized)) || 
+                             (nameFuzzy.length > 5 && textFuzzy.includes(nameFuzzy));
+            const regMatch = regVariations.find(v => textNormalized.includes(v)) || 
+                            (regFuzzy.length > 4 && textFuzzy.includes(regFuzzy) ? regFuzzy : undefined);
 
             if (nameMatch || regMatch) {
-              const matchStr = nameMatch ? off.name : (regMatch || off.registration);
-              const index = textLower.indexOf(matchStr.toLowerCase());
+              const matchStr = nameMatch ? nameNormalized : (typeof regMatch === 'string' ? regMatch : normalizeText(off.registration));
+              const index = textNormalized.indexOf(matchStr);
               const start = Math.max(0, index - 60);
               const end = Math.min(text.length, index + matchStr.length + 80);
               const context = text.substring(start, end).replace(/\s+/g, ' ').trim();
@@ -495,7 +678,7 @@ export default function App() {
               found.push({
                 type: 'officer',
                 match: `${off.name} (${off.registration})`,
-                context: `...${context}...`,
+                context: context ? `...${context}...` : 'Identificado no texto.',
                 page: i,
                 metadata: off
               });
@@ -506,15 +689,17 @@ export default function App() {
           units.forEach(unit => {
             if (!unit.name) return;
             
-            const unitVariations = getUnitVariations(unit.name);
-            const acronymLower = unit.acronym?.toLowerCase();
+            const unitVariations = getUnitVariations(unit.name).map(v => normalizeText(v));
+            const unitFuzzy = normalizeTextFuzzy(unit.name);
+            const acronymNormalized = normalizeText(unit.acronym);
 
-            const unitMatch = unitVariations.find(v => textLower.includes(v));
-            const acronymMatch = acronymLower && textLower.includes(acronymLower);
+            const unitMatch = unitVariations.find(v => textNormalized.includes(v)) || 
+                             (unitFuzzy.length > 4 && textFuzzy.includes(unitFuzzy) ? unitFuzzy : undefined);
+            const acronymMatch = acronymNormalized && textNormalized.includes(acronymNormalized);
 
             if (unitMatch || acronymMatch) {
-              const matchStr = unitMatch || (unit.acronym || '');
-              const index = textLower.indexOf(matchStr.toLowerCase());
+              const matchStr = (typeof unitMatch === 'string' ? unitMatch : acronymNormalized);
+              const index = textNormalized.indexOf(matchStr);
               const start = Math.max(0, index - 60);
               const end = Math.min(text.length, index + matchStr.length + 80);
               const context = text.substring(start, end).replace(/\s+/g, ' ').trim();
@@ -522,7 +707,7 @@ export default function App() {
               found.push({
                 type: 'unit',
                 match: unit.name,
-                context: `...${context}...`,
+                context: context ? `...${context}...` : 'Identificado no texto.',
                 page: i,
                 metadata: unit
               });
@@ -533,10 +718,14 @@ export default function App() {
           searchTerms.forEach(st => {
             if (!st.term) return;
             
-            const termLower = st.term.toLowerCase();
+            const termNormalized = normalizeText(st.term);
+            const termFuzzy = normalizeTextFuzzy(st.term);
             
-            if (textLower.includes(termLower)) {
-              const index = textLower.indexOf(termLower);
+            const hasMatch = textNormalized.includes(termNormalized) || 
+                            (termFuzzy.length > 4 && textFuzzy.includes(termFuzzy));
+
+            if (hasMatch) {
+              const index = textNormalized.indexOf(termNormalized);
               const start = Math.max(0, index - 60);
               const end = Math.min(text.length, index + st.term.length + 80);
               const context = text.substring(start, end).replace(/\s+/g, ' ').trim();
@@ -544,7 +733,7 @@ export default function App() {
               found.push({
                 type: 'term',
                 match: st.term,
-                context: `...${context}...`,
+                context: context ? `...${context}...` : 'Identificado no texto.',
                 page: i,
                 metadata: st
               });
@@ -555,9 +744,14 @@ export default function App() {
           if (loggedInOfficer?.keywords) {
             loggedInOfficer.keywords.forEach(kw => {
               if (!kw) return;
-              const kwLower = kw.toLowerCase();
-              if (textLower.includes(kwLower)) {
-                const index = textLower.indexOf(kwLower);
+              const kwNormalized = normalizeText(kw);
+              const kwFuzzy = normalizeTextFuzzy(kw);
+              
+              const hasMatch = textNormalized.includes(kwNormalized) || 
+                              (kwFuzzy.length > 4 && textFuzzy.includes(kwFuzzy));
+
+              if (hasMatch) {
+                const index = textNormalized.indexOf(kwNormalized);
                 const start = Math.max(0, index - 60);
                 const end = Math.min(text.length, index + kw.length + 80);
                 const context = text.substring(start, end).replace(/\s+/g, ' ').trim();
@@ -565,7 +759,7 @@ export default function App() {
                 found.push({
                   type: 'term',
                   match: `Palavra-chave: ${kw}`,
-                  context: `...${context}...`,
+                  context: context ? `...${context}...` : 'Identificado no texto.',
                   page: i,
                   metadata: { term: kw, category: 'Pessoal' }
                 });
@@ -578,65 +772,48 @@ export default function App() {
         }
       }
 
-      setResults(found);
-      if (found.length === 0) {
-        toast.info('Nenhuma correspondência encontrada no PDF.');
+      if (append) {
+        const newResults = [...results, ...found];
+        const newFullText = [...fullText, ...pagesText];
+        setResults(newResults);
+        setFullText(newFullText);
+        // If admin, save to Firestore
+        if (user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') {
+          await setDoc(doc(db, 'bg_analysis', 'latest'), {
+            fileName: fileName ? `${fileName} + ${name}` : name,
+            results: newResults,
+            fullText: newFullText,
+            pdfUrl: downloadUrl,
+            uploadedAt: new Date().toISOString(),
+            uploadedBy: user?.displayName || loggedInOfficer?.name || 'Administrador'
+          });
+        }
       } else {
-        toast.success(`Processamento concluído! ${found.length} identificações encontradas.`);
+        setResults(found);
+        setFullText(pagesText);
+        // If admin, save to Firestore
+        if (user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') {
+          await setDoc(doc(db, 'bg_analysis', 'latest'), {
+            fileName: name,
+            results: found,
+            fullText: pagesText,
+            pdfUrl: downloadUrl,
+            uploadedAt: new Date().toISOString(),
+            uploadedBy: user?.displayName || loggedInOfficer?.name || 'Administrador'
+          });
+        }
+      }
+      
+      if (found.length === 0 && !append) {
+        toast.info('Nenhuma correspondência encontrada no PDF.');
+      } else if (found.length > 0) {
+        toast.success(`Processamento de ${name} concluído! ${found.length} identificações encontradas.`);
       }
     } catch (error) {
       console.error('PDF Processing Error:', error);
       toast.error('Erro ao processar PDF. Verifique se o arquivo é válido.');
     } finally {
       setIsProcessing(false);
-    }
-  };
-
-  const fetchLatestBG = async () => {
-    setIsFetchingBG(true);
-    const toastId = toast.loading('Buscando último BG no site da PM-RN...');
-    
-    try {
-      const response = await fetch('/api/fetch-latest-bg');
-      const contentType = response.headers.get('content-type');
-      
-      if (!response.ok) {
-        if (contentType && contentType.includes('application/json')) {
-          const error = await response.json();
-          throw new Error(error.error || 'Erro ao buscar BG');
-        } else {
-          const text = await response.text();
-          console.error('Non-JSON error response:', text);
-          throw new Error(`Erro no servidor: ${response.status} ${response.statusText}`);
-        }
-      }
-      
-      if (!contentType || !contentType.includes('application/json')) {
-        throw new Error('O servidor retornou um formato inesperado (não JSON).');
-      }
-      
-      let latest;
-      try {
-        latest = await response.json();
-      } catch (jsonError) {
-        console.error('JSON parse error:', jsonError);
-        throw new Error('O servidor retornou um erro ao processar os dados (JSON inválido).');
-      }
-      
-      toast.loading(`Baixando: ${latest.title}...`, { id: toastId });
-      
-      const pdfResponse = await fetch(latest.url);
-      if (!pdfResponse.ok) throw new Error('Erro ao baixar o arquivo PDF.');
-      
-      const arrayBuffer = await pdfResponse.arrayBuffer();
-      toast.success('BG encontrado! Iniciando processamento...', { id: toastId });
-      
-      await processPDF(arrayBuffer, latest.title);
-    } catch (error: any) {
-      console.error(error);
-      toast.error(error.message || 'Erro ao buscar BG automaticamente.', { id: toastId });
-    } finally {
-      setIsFetchingBG(false);
     }
   };
 
@@ -672,11 +849,40 @@ export default function App() {
       
       {/* Sidebar */}
       <aside className="fixed left-0 top-0 bottom-0 w-72 bg-white border-r border-black/5 p-8 flex flex-col">
-        <div className="flex items-center gap-3 mb-12">
-          <div className="w-10 h-10 bg-[#5A5A40] rounded-xl flex items-center justify-center">
+        <div className="flex flex-col items-center mb-12">
+          <div className="w-24 h-24 mb-4 relative">
+            <div className="absolute inset-0 bg-[#5A5A40]/5 rounded-3xl -rotate-6 transition-transform group-hover:rotate-0"></div>
+            <img 
+              src="https://firebasestorage.googleapis.com/v0/b/my-project-1571939616356.firebasestorage.app/o/bg_files%2Flogo_5bpm.png?alt=media" 
+              alt="5º BPM Logo" 
+              className="w-full h-full object-contain relative z-10 rounded-2xl"
+              referrerPolicy="no-referrer"
+            />
+          </div>
+          <div className="text-center">
+            <h1 className="text-2xl font-serif font-bold tracking-tight text-[#1a1a1a]">5º BPM</h1>
+            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#5A5A40]/40">Câmara Cascudo</p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 mb-8 p-4 bg-[#f5f5f0] rounded-2xl border border-black/5">
+          <div className="w-10 h-10 bg-[#5A5A40] rounded-xl flex items-center justify-center shrink-0">
             <FileText className="text-white w-6 h-6" />
           </div>
-          <span className="text-2xl font-serif font-light tracking-tight">SIA-BG</span>
+          <div className="min-w-0">
+            <span className="text-lg font-serif font-light block truncate">SIA-BG</span>
+            {uploadedAt && new Date(uploadedAt).toDateString() === new Date().toDateString() ? (
+              <div className="flex items-center gap-1 text-[10px] font-bold text-green-600 uppercase tracking-wider">
+                <ShieldCheck className="w-3 h-3" />
+                BG Atualizado
+              </div>
+            ) : (
+              <div className="flex items-center gap-1 text-[10px] font-bold text-orange-600 uppercase tracking-wider">
+                <AlertCircle className="w-3 h-3" />
+                BG Pendente
+              </div>
+            )}
+          </div>
         </div>
 
         <nav className="flex-1 space-y-2">
@@ -784,10 +990,38 @@ export default function App() {
 
       {/* Main Content */}
       <main className="ml-72 p-12 max-w-7xl mx-auto">
-        <div className="flex justify-end mb-8">
-          <div className="flex items-center gap-2 text-[#5A5A40]/60 text-sm font-medium">
-            <UserIcon className="w-4 h-4" />
-            <span>Olá, <span className="text-[#5A5A40] font-bold">{user ? user.displayName : loggedInOfficer?.name}</span></span>
+        <div className="flex justify-end mb-8 items-center gap-6">
+          {fileName && (
+            <button 
+              onClick={() => {
+                if (pdfBlob) {
+                  const url = URL.createObjectURL(pdfBlob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = fileName.endsWith('.pdf') ? fileName : `${fileName}.pdf`;
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                  URL.revokeObjectURL(url);
+                } else if (pdfUrl) {
+                  window.open(pdfUrl, '_blank');
+                } else {
+                  toast.info('O arquivo original não está disponível no momento.');
+                }
+              }}
+              className="flex items-center gap-2 px-6 py-2 bg-white border border-[#5A5A40]/10 rounded-full text-[#5A5A40] hover:bg-[#f5f5f0] transition-all shadow-sm group"
+            >
+              <FileText className="w-4 h-4 group-hover:scale-110 transition-transform" />
+              <span className="font-bold text-xs uppercase tracking-widest">BG DO DIA</span>
+            </button>
+          )}
+          <div className="flex items-center gap-3 bg-white px-6 py-2 rounded-full border border-black/5 shadow-sm">
+            <div className="w-8 h-8 rounded-full bg-[#5A5A40]/10 flex items-center justify-center">
+              <UserIcon className="w-4 h-4 text-[#5A5A40]" />
+            </div>
+            <span className="text-sm font-medium text-[#5A5A40]/60">
+              Olá, <span className="text-[#5A5A40] font-bold">{user ? user.displayName : loggedInOfficer?.name}</span>
+            </span>
           </div>
         </div>
 
@@ -803,62 +1037,164 @@ export default function App() {
               <header className="flex items-end justify-between">
                 <div>
                   <h2 className="text-5xl font-serif font-light mb-4">Verificação BG</h2>
-                  <p className="text-[#5A5A40] italic font-serif">Carregue o Boletim Geral para análise automatizada.</p>
+                  <p className="text-[#5A5A40] italic font-serif">
+                    {(user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') 
+                      ? "Carregue o Boletim Geral do dia para análise e compartilhamento." 
+                      : "Resultados da análise do último Boletim Geral carregado."}
+                  </p>
                 </div>
-                <button
-                  onClick={fetchLatestBG}
-                  disabled={isFetchingBG || isProcessing}
-                  className="flex items-center gap-2 px-6 py-3 bg-[#5A5A40] text-white rounded-full hover:bg-[#4a4a35] transition-all shadow-lg shadow-[#5A5A40]/20 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isFetchingBG ? (
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                  ) : (
-                    <Globe className="w-5 h-5" />
-                  )}
-                  <span className="font-bold">Buscar BG da PM-RN</span>
-                </button>
               </header>
 
-              {/* Upload Area */}
-              <div className="relative group">
-                <input 
-                  type="file" 
-                  accept=".pdf" 
-                  onChange={onFileChange}
-                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                  disabled={isProcessing}
-                />
-                <div className={cn(
-                  "border-2 border-dashed rounded-[40px] p-16 flex flex-col items-center justify-center transition-all duration-300",
-                  isProcessing ? "bg-white/50 border-[#5A5A40]/20" : "bg-white border-[#5A5A40]/10 group-hover:border-[#5A5A40]/40 group-hover:bg-white/80"
-                )}>
-                  {isProcessing ? (
-                    <div className="text-center space-y-6">
-                      <div className="relative w-24 h-24 mx-auto">
-                        <Loader2 className="w-24 h-24 animate-spin text-[#5A5A40]" />
-                        <div className="absolute inset-0 flex items-center justify-center text-sm font-bold">
-                          {progress}%
-                        </div>
+              {/* Global Analysis Summary */}
+              {fileName && (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm">
+                    <div className="flex items-center gap-4 mb-4">
+                      <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center">
+                        <Users className="w-6 h-6" />
                       </div>
-                      <p className="text-xl font-serif italic text-[#5A5A40]">Analisando documento...</p>
+                      <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">Policiais</span>
                     </div>
-                  ) : (
-                    <>
-                      <div className="w-20 h-20 bg-[#f5f5f0] rounded-full flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
-                        <Upload className="text-[#5A5A40] w-8 h-8" />
+                    <p className="text-4xl font-serif">{results.filter(r => r.type === 'officer').length}</p>
+                    <p className="text-sm text-[#5A5A40]/60 mt-2">Identificados no banco de dados</p>
+                  </div>
+                  <div className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm">
+                    <div className="flex items-center gap-4 mb-4">
+                      <div className="w-12 h-12 bg-green-50 text-green-600 rounded-2xl flex items-center justify-center">
+                        <Building2 className="w-6 h-6" />
                       </div>
-                      <p className="text-2xl font-serif mb-2">Arraste o PDF ou clique para selecionar</p>
-                      <p className="text-[#5A5A40]/60">Boletim Geral da PMRN (PDF)</p>
-                    </>
-                  )}
+                      <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">5º BPM</span>
+                    </div>
+                    <p className="text-4xl font-serif">
+                      {results.filter(r => 
+                        r.type === 'unit' && 
+                        (normalizeText(r.match).includes('5 bpm') || normalizeText(r.match).includes('5 batalhao'))
+                      ).length}
+                    </p>
+                    <p className="text-sm text-[#5A5A40]/60 mt-2">Menções ao 5º Batalhão</p>
+                  </div>
+                  <div className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm">
+                    <div className="flex items-center gap-4 mb-4">
+                      <div className="w-12 h-12 bg-orange-50 text-orange-600 rounded-2xl flex items-center justify-center">
+                        <Search className="w-6 h-6" />
+                      </div>
+                      <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">Termos</span>
+                    </div>
+                    <p className="text-4xl font-serif">
+                      {userSpecificResults.filter(r => r.type === 'personal').length}
+                    </p>
+                    <p className="text-sm text-[#5A5A40]/60 mt-2">Suas palavras-chave mencionadas</p>
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {/* User Highlight Summary */}
+              {loggedInOfficer && fileName && (
+                <motion.div 
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className={cn(
+                    "rounded-[40px] p-10 border-2 transition-all duration-500",
+                    userSpecificResults.length > 0 
+                      ? "bg-red-50 border-red-200 shadow-xl shadow-red-900/5" 
+                      : "bg-green-50 border-green-200 shadow-xl shadow-green-900/5"
+                  )}
+                >
+                  <div className="flex items-center justify-between mb-8">
+                    <div className="flex items-center gap-6">
+                      <div className={cn(
+                        "w-20 h-20 rounded-3xl flex items-center justify-center animate-pulse",
+                        userSpecificResults.length > 0 ? "bg-red-500 text-white" : "bg-green-500 text-white"
+                      )}>
+                        {userSpecificResults.length > 0 ? <AlertCircle className="w-10 h-10" /> : <CheckCircle2 className="w-10 h-10" />}
+                      </div>
+                      <div>
+                        <h3 className="text-4xl font-serif font-bold mb-2">
+                          {userSpecificResults.length > 0 ? 'Atenção: Menções Encontradas!' : 'Nada Consta no Boletim'}
+                        </h3>
+                        <p className={cn(
+                          "text-lg font-serif italic",
+                          userSpecificResults.length > 0 ? "text-red-700" : "text-green-700"
+                        )}>
+                          {userSpecificResults.length > 0 
+                            ? 'Confira abaixo os detalhes das ocorrências identificadas.' 
+                            : 'Seu nome, matrícula e palavras-chave não foram encontrados neste boletim.'}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {userSpecificResults.length > 0 && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {userSpecificResults.map((res, i) => (
+                        <div key={i} className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 border border-red-100">
+                          <div className="flex items-center justify-between mb-3">
+                            <span className="text-xs font-bold uppercase tracking-widest text-red-600">{res.label}</span>
+                            <span className="text-xs font-bold bg-red-100 text-red-700 px-2 py-1 rounded-lg">Pág. {res.page}</span>
+                          </div>
+                          <p className="font-bold text-red-900 mb-2">{res.match}</p>
+                          <p className="text-sm text-red-800/70 italic line-clamp-2">{res.context}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </motion.div>
+              )}
+
+              {/* Upload Area (Admin Only) */}
+              {(user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') && (
+                <div className="relative group">
+                  <input 
+                    type="file" 
+                    accept=".pdf" 
+                    onChange={onFileChange}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                    disabled={isProcessing}
+                  />
+                  <div className={cn(
+                    "border-2 border-dashed rounded-[40px] p-16 flex flex-col items-center justify-center transition-all duration-300",
+                    isProcessing ? "bg-white/50 border-[#5A5A40]/20" : "bg-white border-[#5A5A40]/10 group-hover:border-[#5A5A40]/40 group-hover:bg-white/80"
+                  )}>
+                    {isProcessing ? (
+                      <div className="text-center space-y-6">
+                        <div className="relative w-24 h-24 mx-auto">
+                          <Loader2 className="w-24 h-24 animate-spin text-[#5A5A40]" />
+                          <div className="absolute inset-0 flex items-center justify-center text-sm font-bold">
+                            {progress}%
+                          </div>
+                        </div>
+                        <p className="text-xl font-serif italic text-[#5A5A40]">Analisando documento...</p>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="w-20 h-20 bg-[#f5f5f0] rounded-full flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+                          <Upload className="text-[#5A5A40] w-8 h-8" />
+                        </div>
+                        <p className="text-2xl font-serif mb-2">Arraste o PDF ou clique para selecionar</p>
+                        <p className="text-[#5A5A40]/60">Boletim Geral da PMRN (PDF)</p>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* Results */}
-              {results.length > 0 && (
-                <div className="space-y-8">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-3xl font-serif font-light">Resultados Encontrados ({results.length})</h3>
+              <div className="space-y-8">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center shadow-sm border border-black/5">
+                      <FileText className="text-[#5A5A40] w-6 h-6" />
+                    </div>
+                    <div>
+                      <h3 className="text-3xl font-serif font-light">
+                        {results.length > 0 ? `Resultados Encontrados (${results.length})` : 'Resultados da Identificação'}
+                      </h3>
+                      <p className="text-[#5A5A40]/60 text-sm">
+                        {fileName ? `Arquivo: ${fileName}` : 'Nenhum boletim analisado recentemente.'}
+                      </p>
+                    </div>
+                  </div>
+                  {results.length > 0 && (
                     <div className="flex gap-4">
                       <button className="flex items-center gap-2 px-6 py-3 bg-white rounded-full border border-black/5 hover:bg-[#f5f5f0] transition-colors">
                         <Filter className="w-4 h-4" />
@@ -869,88 +1205,49 @@ export default function App() {
                         Exportar Relatório
                       </button>
                     </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-6">
-                    {results.map((res, idx) => (
-                      <motion.div 
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: idx * 0.05 }}
-                        key={idx}
-                        className="bg-white rounded-3xl p-8 border border-black/5 hover:shadow-xl hover:shadow-black/5 transition-all"
-                      >
-                        <div className="flex items-start justify-between mb-6">
-                          <div className="flex items-center gap-4">
-                            <div className={cn(
-                              "w-12 h-12 rounded-2xl flex items-center justify-center",
-                              res.type === 'officer' ? "bg-blue-50 text-blue-600" : 
-                              res.type === 'unit' ? "bg-green-50 text-green-600" : "bg-orange-50 text-orange-600"
-                            )}>
-                              {res.type === 'officer' ? <Users className="w-6 h-6" /> : 
-                               res.type === 'unit' ? <Building2 className="w-6 h-6" /> : <Search className="w-6 h-6" />}
-                            </div>
-                            <div>
-                              <span className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/40 mb-1 block">
-                                {res.type === 'officer' ? 'Policial Identificado' : 
-                                 res.type === 'unit' ? 'Unidade Identificada' : 'Termo Personalizado'}
-                              </span>
-                              <h4 className="text-xl font-bold">{res.match}</h4>
-                            </div>
-                          </div>
-                          <div className="px-4 py-2 bg-[#f5f5f0] rounded-full text-sm font-bold text-[#5A5A40]">
-                            Página {res.page}
-                          </div>
-                        </div>
-                        <div className="bg-[#f5f5f0]/50 rounded-2xl p-6 border border-black/5">
-                          <p className="text-[#5A5A40] italic font-serif leading-relaxed">
-                            {res.context}
-                          </p>
-                        </div>
-                      </motion.div>
-                    ))}
-                  </div>
+                  )}
                 </div>
-              )}
 
-              {/* User Keywords Management */}
-              {loggedInOfficer && (
-                <div className="bg-white rounded-[40px] p-10 border border-black/5 shadow-sm space-y-8">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="text-3xl font-serif font-light">Minhas Palavras-Chave</h3>
-                      <p className="text-[#5A5A40]/60 italic">Cadastre termos específicos para busca automática nos boletins.</p>
-                    </div>
-                    <div className="w-12 h-12 bg-[#5A5A40]/5 rounded-2xl flex items-center justify-center">
-                      <Search className="text-[#5A5A40] w-6 h-6" />
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap gap-3">
-                    {loggedInOfficer.keywords?.map((kw, i) => (
-                      <div key={i} className="flex items-center gap-2 px-4 py-2 bg-[#f5f5f0] rounded-full text-sm font-bold text-[#5A5A40]">
-                        {kw}
-                        <button 
-                          onClick={() => updateKeywords(loggedInOfficer.keywords?.filter((_, idx) => idx !== i) || [])}
-                          className="hover:text-red-500 transition-colors"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
-                      </div>
-                    ))}
-                    <button 
-                      onClick={() => {
-                        const term = prompt('Digite a nova palavra-chave:');
-                        if (term) updateKeywords([...(loggedInOfficer.keywords || []), term]);
-                      }}
-                      className="flex items-center gap-2 px-4 py-2 border-2 border-dashed border-[#5A5A40]/20 rounded-full text-sm font-bold text-[#5A5A40]/60 hover:border-[#5A5A40]/40 hover:text-[#5A5A40] transition-all"
+                <div className="grid grid-cols-1 gap-6">
+                  {results.map((res, idx) => (
+                    <motion.div 
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: idx * 0.05 }}
+                      key={idx}
+                      className="bg-white rounded-3xl p-8 border border-black/5 hover:shadow-xl hover:shadow-black/5 transition-all"
                     >
-                      <Plus className="w-3 h-3" />
-                      Adicionar Termo
-                    </button>
-                  </div>
+                      <div className="flex items-start justify-between mb-6">
+                        <div className="flex items-center gap-4">
+                          <div className={cn(
+                            "w-12 h-12 rounded-2xl flex items-center justify-center",
+                            res.type === 'officer' ? "bg-blue-50 text-blue-600" : 
+                            res.type === 'unit' ? "bg-green-50 text-green-600" : "bg-orange-50 text-orange-600"
+                          )}>
+                            {res.type === 'officer' ? <Users className="w-6 h-6" /> : 
+                             res.type === 'unit' ? <Building2 className="w-6 h-6" /> : <Search className="w-6 h-6" />}
+                          </div>
+                          <div>
+                            <span className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/40 mb-1 block">
+                              {res.type === 'officer' ? 'Policial Identificado' : 
+                               res.type === 'unit' ? 'Unidade Identificada' : 'Termo Personalizado'}
+                            </span>
+                            <h4 className="text-xl font-bold">{res.match}</h4>
+                          </div>
+                        </div>
+                        <div className="px-4 py-2 bg-[#f5f5f0] rounded-full text-sm font-bold text-[#5A5A40]">
+                          Página {res.page}
+                        </div>
+                      </div>
+                      <div className="bg-[#f5f5f0]/50 rounded-2xl p-6 border border-black/5">
+                        <p className="text-[#5A5A40] italic font-serif leading-relaxed">
+                          {res.context}
+                        </p>
+                      </div>
+                    </motion.div>
+                  ))}
                 </div>
-              )}
+              </div>
             </motion.div>
           )}
 
@@ -1375,8 +1672,14 @@ function LoginScreen({ onLogin, onAdminLogin }: { onLogin: (reg: string, pass: s
         className="w-full max-w-md bg-white rounded-[40px] p-12 shadow-xl shadow-black/5 border border-black/5"
       >
         <div className="flex flex-col items-center mb-10">
-          <div className="w-16 h-16 bg-[#5A5A40] rounded-2xl flex items-center justify-center mb-6">
-            <FileText className="text-white w-8 h-8" />
+          <div className="w-24 h-24 mb-6 relative">
+            <div className="absolute inset-0 bg-[#5A5A40]/5 rounded-3xl -rotate-6"></div>
+            <img 
+              src="https://firebasestorage.googleapis.com/v0/b/my-project-1571939616356.firebasestorage.app/o/bg_files%2Flogo_5bpm.png?alt=media" 
+              alt="5º BPM Logo" 
+              className="w-full h-full object-contain relative z-10 rounded-2xl"
+              referrerPolicy="no-referrer"
+            />
           </div>
           <h1 className="text-4xl font-serif font-light tracking-tight mb-2">SIA-BG</h1>
           <p className="text-[#5A5A40]/60 italic font-serif text-center">Sistema de Identificação Automatizada</p>
@@ -1460,7 +1763,7 @@ function ChangePasswordModal({ onSave, onCancel }: { onSave: (pass: string) => v
       >
         <div className="flex flex-col items-center mb-8">
           <div className="w-16 h-16 bg-blue-50 rounded-2xl flex items-center justify-center mb-6">
-            <CheckCircle2 className="text-blue-600 w-8 h-8" />
+            <Key className="text-blue-600 w-8 h-8" />
           </div>
           <h2 className="text-3xl font-serif font-light mb-2">Alterar Senha</h2>
           <p className="text-[#5A5A40]/60 text-center">Defina uma nova senha segura para sua conta.</p>

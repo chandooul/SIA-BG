@@ -35,6 +35,19 @@
         "category": { "type": "string", "description": "Categoria do termo (Instituição, Evento, etc.)" }
       },
       "required": ["term"]
+    },
+    "BGAnalysis": {
+      "title": "Análise do Boletim Geral",
+      "description": "Resultados da análise do BG carregado pelo administrador",
+      "type": "object",
+      "properties": {
+        "fileName": { "type": "string", "description": "Nome do arquivo PDF" },
+        "uploadedAt": { "type": "string", "description": "Data e hora do upload" },
+        "uploadedBy": { "type": "string", "description": "Nome do administrador que fez o upload" },
+        "results": { "type": "array", "description": "Lista de correspondências encontradas" },
+        "fullText": { "type": "array", "items": { "type": "object", "properties": { "page": { "type": "integer" }, "text": { "type": "string" } } }, "description": "Conteúdo textual completo do PDF por página" }
+      },
+      "required": ["fileName", "uploadedAt", "results"]
     }
   },
   "firestore": {
@@ -49,6 +62,10 @@
     "/searchTerms/{termId}": {
       "schema": "SearchTerm",
       "description": "Coleção de termos personalizados"
+    },
+    "/bg_analysis/latest": {
+      "schema": "BGAnalysis",
+      "description": "Documento contendo a análise mais recente do BG"
     }
   }
 }

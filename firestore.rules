@@ -59,18 +59,31 @@ service cloud.firestore {
              (!('category' in data) || (data.category is string && data.category.size() < 100));
     }
 
-    // Rules
+    function isValidBGAnalysis(data) {
+      return data.fileName is string && data.fileName.size() > 0 && data.fileName.size() < 500 &&
+             data.uploadedAt is string && data.uploadedAt.size() > 0 && data.uploadedAt.size() < 100 &&
+             data.results is list && data.results.size() < 5000;
+    }
+
+    // Rules for BG Analysis - ensure public read access
+    match /bg_analysis/latest {
+      allow read: if true;
+      allow write: if isAdmin() && (request.resource.data == null || isValidBGAnalysis(request.resource.data));
+    }
+
+    match /bg_analysis/{bgId} {
+      allow read: if true;
+      allow write: if isAdmin() && (request.resource.data == null || isValidBGAnalysis(request.resource.data));
+    }
+
     match /users/{userId} {
-      // Allow users to manage their own profile/role cache
       allow read, write: if isAuthenticated() && request.auth.uid == userId;
       allow read, write: if isAdmin();
     }
 
     match /officers/{officerId} {
       allow read: if true;
-      // Allow users to update their own password, first access flag, and keywords
-      allow update: if isAdmin() || 
-        (isAuthenticated() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['password', 'isFirstAccess', 'keywords']));
+      allow update: if isAdmin() || (isAuthenticated() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['password', 'isFirstAccess', 'keywords']));
       allow create, delete: if isAdmin();
     }
 
