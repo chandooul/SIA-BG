@@ -53,6 +53,7 @@ import {
   collection, 
   addDoc, 
   getDocs, 
+  getDoc,
   deleteDoc, 
   doc, 
   query, 
@@ -209,20 +210,31 @@ export default function App() {
       handleFirestoreError(err, OperationType.GET, 'bg_analysis/latest');
     });
 
-    const unsubAdmins = onSnapshot(collection(db, 'authorized_admins'), (snapshot) => {
-      setAuthorizedAdmins(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as AuthorizedAdmin)));
-    }, (err) => {
-      console.error('Error fetching authorized admins:', err);
-    });
-
     return () => {
       unsubOfficers();
       unsubUnits();
       unsubTerms();
       unsubBG();
-      unsubAdmins();
     };
   }, []);
+
+  // Admin Listener - reacts to user login
+  useEffect(() => {
+    if (!user) {
+      setAuthorizedAdmins([]);
+      return;
+    }
+
+    const unsubAdmins = onSnapshot(collection(db, 'authorized_admins'), (snapshot) => {
+      setAuthorizedAdmins(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as AuthorizedAdmin)));
+    }, (err) => {
+      console.error('Error fetching authorized admins:', err);
+      // If permission denied, it just means they aren't an admin, so we keep the list empty
+      setAuthorizedAdmins([]);
+    });
+
+    return () => unsubAdmins();
+  }, [user]);
 
   const ADMIN_EMAIL = "chandooul@gmail.com";
 
@@ -240,12 +252,25 @@ export default function App() {
     try {
       const result = await signInWithPopup(auth, googleProvider);
       const loggedUser = result.user;
-      console.log('Login successful for:', loggedUser.email);
+      const email = loggedUser.email?.toLowerCase() || '';
+      console.log('Login successful for:', email);
       
-      const isAuthorized = loggedUser.email === ADMIN_EMAIL || authorizedAdmins.some(a => a.email === loggedUser.email);
+      let isAuthorized = email === ADMIN_EMAIL.toLowerCase();
       
       if (!isAuthorized) {
-        console.warn('User is not an authorized administrator:', loggedUser.email);
+        // Direct check in Firestore to avoid stale state issues during login
+        try {
+          const adminDoc = await getDoc(doc(db, 'authorized_admins', email));
+          if (adminDoc.exists()) {
+            isAuthorized = true;
+          }
+        } catch (err) {
+          console.error('Error checking authorization:', err);
+        }
+      }
+      
+      if (!isAuthorized) {
+        console.warn('User is not an authorized administrator:', email);
         toast.error('Acesso negado. Esta conta Gmail não possui privilégios administrativos.');
         await signOut(auth);
       } else {
