@@ -31,7 +31,8 @@ service cloud.firestore {
 
     function isAdmin() {
       return isAuthenticated() && (
-        (request.auth.token.email == "chandooul@gmail.com" && request.auth.token.email_verified == true) ||
+        (request.auth.token.email.lower() == "chandooul@gmail.com" && request.auth.token.email_verified == true) ||
+        exists(/databases/$(database)/documents/authorized_admins/$(request.auth.token.email.lower())) ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
       );
@@ -60,9 +61,14 @@ service cloud.firestore {
     }
 
     function isValidBGAnalysis(data) {
-      return data.fileName is string && data.fileName.size() > 0 && data.fileName.size() < 500 &&
-             data.uploadedAt is string && data.uploadedAt.size() > 0 && data.uploadedAt.size() < 100 &&
-             data.results is list && data.results.size() < 5000;
+      return data.fileName is string && data.fileName.size() > 0 &&
+             data.uploadedAt is string && data.uploadedAt.size() > 0 &&
+             data.results is list &&
+             (!('pdfUrl' in data) || data.pdfUrl is string) &&
+             (!('uploadedBy' in data) || data.uploadedBy is string) &&
+             (!('bgNumber' in data) || data.bgNumber is string) &&
+             (!('bgDate' in data) || data.bgDate is string) &&
+             (!('fullText' in data) || data.fullText is list);
     }
 
     // Rules for BG Analysis - ensure public read access
@@ -97,6 +103,11 @@ service cloud.firestore {
       allow read: if true;
       allow create, update: if isAdmin() && isValidSearchTerm(request.resource.data);
       allow delete: if isAdmin();
+    }
+
+    match /authorized_admins/{adminEmail} {
+      allow read: if isAdmin();
+      allow write: if isAdmin() && adminEmail == adminEmail.lower();
     }
   }
 }

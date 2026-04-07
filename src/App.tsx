@@ -68,7 +68,7 @@ import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
 // PDF.js worker setup - using a reliable CDN that matches the installed version
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@5.6.205/build/pdf.worker.min.mjs`;
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -99,6 +99,12 @@ interface SearchTerm {
   category?: string;
 }
 
+interface AuthorizedAdmin {
+  id: string;
+  email: string;
+  addedAt: string;
+}
+
 interface IdentificationResult {
   type: 'officer' | 'unit' | 'term';
   match: string;
@@ -113,12 +119,13 @@ export default function App() {
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'database' | 'settings' | 'keywords'>('dashboard');
-  const [dbTab, setDbTab] = useState<'officers' | 'units' | 'terms'>('officers');
+  const [dbTab, setDbTab] = useState<'officers' | 'units' | 'terms' | 'admins'>('officers');
   
   // Database State
   const [officers, setOfficers] = useState<Officer[]>([]);
   const [units, setUnits] = useState<Unit[]>([]);
   const [searchTerms, setSearchTerms] = useState<SearchTerm[]>([]);
+  const [authorizedAdmins, setAuthorizedAdmins] = useState<AuthorizedAdmin[]>([]);
   
   // Processing State
   const [isProcessing, setIsProcessing] = useState(false);
@@ -127,25 +134,25 @@ export default function App() {
   const [userSpecificResults, setUserSpecificResults] = useState<any[]>([]);
   const [fileName, setFileName] = useState<string | null>(null);
   const [uploadedAt, setUploadedAt] = useState<string | null>(null);
+  const [bgNumber, setBgNumber] = useState<string>('');
+  const [bgDate, setBgDate] = useState<string>('');
+  const [uploadBgNumber, setUploadBgNumber] = useState<string>('');
+  const [uploadBgDate, setUploadBgDate] = useState<string>('');
   const [progress, setProgress] = useState(0);
+  const [processingMessage, setProcessingMessage] = useState('Analisando documento...');
 
   // Form States
   const [newOfficer, setNewOfficer] = useState({ name: '', registration: '', unit: '', rank: '', role: 'user' as 'admin' | 'user' });
   const [newUnit, setNewUnit] = useState({ name: '', acronym: '' });
   const [newTerm, setNewTerm] = useState({ term: '', category: '' });
   const [isBulkUploading, setIsBulkUploading] = useState(false);
+  const [newAdminEmail, setNewAdminEmail] = useState('');
 
   // Auth Listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
       setLoading(false);
-      
-      // If user is not admin and is on an admin tab, redirect to dashboard
-      const isAdmin = u?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin';
-      if (!isAdmin && (activeTab === 'database' || activeTab === 'settings')) {
-        setActiveTab('dashboard');
-      }
     });
 
     // Check for saved officer session
@@ -192,6 +199,8 @@ export default function App() {
         setFileName(data.fileName || null);
         setPdfUrl(data.pdfUrl || null);
         setUploadedAt(data.uploadedAt || null);
+        setBgNumber(data.bgNumber || '');
+        setBgDate(data.bgDate || '');
         console.log('Latest BG analysis loaded from Firestore');
       }
     }, (err) => {
@@ -200,15 +209,31 @@ export default function App() {
       handleFirestoreError(err, OperationType.GET, 'bg_analysis/latest');
     });
 
+    const unsubAdmins = onSnapshot(collection(db, 'authorized_admins'), (snapshot) => {
+      setAuthorizedAdmins(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as AuthorizedAdmin)));
+    }, (err) => {
+      console.error('Error fetching authorized admins:', err);
+    });
+
     return () => {
       unsubOfficers();
       unsubUnits();
       unsubTerms();
       unsubBG();
+      unsubAdmins();
     };
   }, []);
 
   const ADMIN_EMAIL = "chandooul@gmail.com";
+
+  const isAuthorizedAdmin = user?.email === ADMIN_EMAIL || authorizedAdmins.some(a => a.email === user?.email);
+  const isAdmin = isAuthorizedAdmin || loggedInOfficer?.role === 'admin';
+
+  useEffect(() => {
+    if (!loading && !isAdmin && (activeTab === 'database' || activeTab === 'settings')) {
+      setActiveTab('dashboard');
+    }
+  }, [isAdmin, activeTab, loading]);
 
   const handleLogin = async () => {
     console.log('Attempting Google login...');
@@ -217,10 +242,12 @@ export default function App() {
       const loggedUser = result.user;
       console.log('Login successful for:', loggedUser.email);
       
-      if (loggedUser.email !== ADMIN_EMAIL) {
+      const isAuthorized = loggedUser.email === ADMIN_EMAIL || authorizedAdmins.some(a => a.email === loggedUser.email);
+      
+      if (!isAuthorized) {
         console.warn('User is not an authorized administrator:', loggedUser.email);
-        toast.error('Acesso negado. Esta conta não possui privilégios administrativos.');
-        // Optionally sign out if not admin, or just keep them logged in but restricted
+        toast.error('Acesso negado. Esta conta Gmail não possui privilégios administrativos.');
+        await signOut(auth);
       } else {
         toast.success('Acesso administrativo concedido!');
       }
@@ -373,6 +400,48 @@ export default function App() {
       toast.success('Termo adicionado!');
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'searchTerms');
+    }
+  };
+
+  const addAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const emailToAuthorize = newAdminEmail.toLowerCase().trim();
+    
+    if (!emailToAuthorize.includes('@gmail.com')) {
+      toast.error('Por favor, insira um e-mail válido do Gmail.');
+      return;
+    }
+    if (authorizedAdmins.some(a => a.email.toLowerCase() === emailToAuthorize)) {
+      toast.error('Este e-mail já está cadastrado como administrador.');
+      return;
+    }
+    try {
+      await setDoc(doc(db, 'authorized_admins', emailToAuthorize), {
+        email: emailToAuthorize,
+        addedAt: new Date().toISOString()
+      });
+      setNewAdminEmail('');
+      toast.success('Administrador autorizado com sucesso!');
+    } catch (err) {
+      console.error('Erro ao adicionar administrador:', err);
+      toast.error('Erro ao autorizar administrador. Verifique suas permissões.');
+      handleFirestoreError(err, OperationType.CREATE, 'authorized_admins');
+    }
+  };
+
+  const removeAdmin = async (id: string, email: string) => {
+    if (email === ADMIN_EMAIL) {
+      toast.error('O administrador mestre não pode ser removido.');
+      return;
+    }
+    if (!confirm(`Deseja remover o acesso administrativo de ${email}?`)) return;
+    try {
+      await deleteDoc(doc(db, 'authorized_admins', id));
+      toast.success('Administrador removido.');
+    } catch (err) {
+      console.error('Erro ao remover administrador:', err);
+      toast.error('Erro ao remover administrador.');
+      handleFirestoreError(err, OperationType.DELETE, `authorized_admins/${id}`);
     }
   };
 
@@ -610,6 +679,7 @@ export default function App() {
     console.log('Starting PDF processing for:', name);
     
     setIsProcessing(true);
+    setProcessingMessage('Iniciando processamento...');
     setFileName(prev => append && prev ? `${prev} + ${name}` : name);
     if (!append) {
       setResults([]);
@@ -623,28 +693,68 @@ export default function App() {
       
       // Delete previous file if it exists and we're not appending
       if (pdfUrl && !append) {
+        setProcessingMessage('Limpando arquivos antigos...');
         try {
-          const oldFileRef = ref(storage, pdfUrl);
-          await deleteObject(oldFileRef);
-          console.log('Previous PDF deleted from Storage');
+          // Only try to delete if the URL belongs to our storage bucket
+          const config = await import('../firebase-applet-config.json');
+          if (pdfUrl.includes(config.storageBucket)) {
+            const oldFileRef = ref(storage, pdfUrl);
+            await deleteObject(oldFileRef);
+            console.log('Previous PDF deleted from Storage');
+          }
         } catch (deleteError) {
-          console.warn('Could not delete previous PDF (it might have been already deleted):', deleteError);
+          console.warn('Could not delete previous PDF:', deleteError);
         }
       }
 
       // Upload to Firebase Storage
-      const storageRef = ref(storage, `bg_files/${name}`);
-      const uploadResult = await uploadBytes(storageRef, blob);
-      const downloadUrl = await getDownloadURL(uploadResult.ref);
-      setPdfUrl(downloadUrl);
+      console.log('Uploading PDF to Storage...');
+      setProcessingMessage('Enviando arquivo para o servidor...');
+      setProgress(10); // Initial progress for upload
+      
+      let downloadUrl = '';
+      try {
+        const storageRef = ref(storage, `bg_files/${name}`);
+        const uploadResult = await uploadBytes(storageRef, blob);
+        console.log('PDF uploaded successfully');
+        downloadUrl = await getDownloadURL(uploadResult.ref);
+        setPdfUrl(downloadUrl);
+      } catch (storageErr: any) {
+        console.error('Storage Upload Error:', storageErr);
+        // Fallback to local URL for immediate analysis
+        downloadUrl = URL.createObjectURL(blob);
+        setPdfUrl(downloadUrl);
+        
+        if (storageErr.code === 'storage/retry-limit-exceeded') {
+          toast.error('O tempo limite de upload foi excedido. O arquivo será analisado localmente, mas não ficará salvo permanentemente.');
+        } else if (storageErr.code === 'storage/unauthorized') {
+          toast.error('Sem permissão para salvar no Storage. Verifique as regras de segurança no Console Firebase.');
+        } else {
+          toast.warning('Falha ao salvar arquivo no servidor. Analisando cópia local...');
+        }
+      }
+      
+      setProgress(40);
 
-      const pdf = await pdfjsLib.getDocument({ data }).promise;
+      console.log('Initializing PDF.js...');
+      setProcessingMessage('Carregando motor de análise (PDF.js)...');
+      const pdf = await pdfjsLib.getDocument({ 
+        data,
+        cMapUrl: `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/cmaps/`,
+        cMapPacked: true,
+      }).promise;
       const numPages = pdf.numPages;
+      console.log(`PDF loaded with ${numPages} pages`);
       const found: IdentificationResult[] = [];
       const pagesText: {page: number, text: string}[] = [];
 
+      setProcessingMessage(`Analisando ${numPages} páginas...`);
+      
       for (let i = 1; i <= numPages; i++) {
         try {
+          // Yield to main thread to keep UI responsive
+          await new Promise(resolve => setTimeout(resolve, 0));
+          
           const page = await pdf.getPage(i);
           const textContent = await page.getTextContent();
           const text = textContent.items.map((item: any) => item.str).join(' ');
@@ -652,7 +762,11 @@ export default function App() {
           const textFuzzy = normalizeTextFuzzy(text);
           
           pagesText.push({ page: i, text });
-          setProgress(Math.round((i / numPages) * 100));
+          
+          // Calculate progress from 40% to 100%
+          const analysisProgress = Math.round(40 + (i / numPages) * 60);
+          setProgress(analysisProgress);
+          setProcessingMessage(`Analisando página ${i} de ${numPages}...`);
 
           // Search for Officers
           officers.forEach(off => {
@@ -779,28 +893,40 @@ export default function App() {
         setFullText(newFullText);
         // If admin, save to Firestore
         if (user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') {
-          await setDoc(doc(db, 'bg_analysis', 'latest'), {
-            fileName: fileName ? `${fileName} + ${name}` : name,
-            results: newResults,
-            fullText: newFullText,
-            pdfUrl: downloadUrl,
-            uploadedAt: new Date().toISOString(),
-            uploadedBy: user?.displayName || loggedInOfficer?.name || 'Administrador'
-          });
+          try {
+            await setDoc(doc(db, 'bg_analysis', 'latest'), {
+              fileName: fileName ? `${fileName} + ${name}` : name,
+              results: newResults,
+              fullText: newFullText,
+              pdfUrl: downloadUrl,
+              uploadedAt: new Date().toISOString(),
+              uploadedBy: user?.displayName || loggedInOfficer?.name || 'Administrador',
+              bgNumber: uploadBgNumber,
+              bgDate: uploadBgDate
+            });
+          } catch (error) {
+            handleFirestoreError(error, OperationType.WRITE, 'bg_analysis/latest');
+          }
         }
       } else {
         setResults(found);
         setFullText(pagesText);
         // If admin, save to Firestore
         if (user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') {
-          await setDoc(doc(db, 'bg_analysis', 'latest'), {
-            fileName: name,
-            results: found,
-            fullText: pagesText,
-            pdfUrl: downloadUrl,
-            uploadedAt: new Date().toISOString(),
-            uploadedBy: user?.displayName || loggedInOfficer?.name || 'Administrador'
-          });
+          try {
+            await setDoc(doc(db, 'bg_analysis', 'latest'), {
+              fileName: name,
+              results: found,
+              fullText: pagesText,
+              pdfUrl: downloadUrl,
+              uploadedAt: new Date().toISOString(),
+              uploadedBy: user?.displayName || loggedInOfficer?.name || 'Administrador',
+              bgNumber: uploadBgNumber,
+              bgDate: uploadBgDate
+            });
+          } catch (error) {
+            handleFirestoreError(error, OperationType.WRITE, 'bg_analysis/latest');
+          }
         }
       }
       
@@ -809,9 +935,14 @@ export default function App() {
       } else if (found.length > 0) {
         toast.success(`Processamento de ${name} concluído! ${found.length} identificações encontradas.`);
       }
-    } catch (error) {
+      
+      // Clear upload fields
+      setUploadBgNumber('');
+      setUploadBgDate('');
+    } catch (error: any) {
       console.error('PDF Processing Error:', error);
-      toast.error('Erro ao processar PDF. Verifique se o arquivo é válido.');
+      const errorMessage = error?.message || 'Erro desconhecido';
+      toast.error(`Erro ao processar PDF: ${errorMessage}. Verifique se o arquivo é válido e se você tem permissão.`);
     } finally {
       setIsProcessing(false);
     }
@@ -853,7 +984,7 @@ export default function App() {
           <div className="w-24 h-24 mb-4 relative">
             <div className="absolute inset-0 bg-[#5A5A40]/5 rounded-3xl -rotate-6 transition-transform group-hover:rotate-0"></div>
             <img 
-              src="https://firebasestorage.googleapis.com/v0/b/my-project-1571939616356.firebasestorage.app/o/bg_files%2Flogo_5bpm.png?alt=media" 
+              src="https://lh3.googleusercontent.com/d/1ZeVU9ZIkPN3wqDDLTMbTM3zuH1KnUMbl" 
               alt="5º BPM Logo" 
               className="w-full h-full object-contain relative z-10 rounded-2xl"
               referrerPolicy="no-referrer"
@@ -871,15 +1002,15 @@ export default function App() {
           </div>
           <div className="min-w-0">
             <span className="text-lg font-serif font-light block truncate">SIA-BG</span>
-            {uploadedAt && new Date(uploadedAt).toDateString() === new Date().toDateString() ? (
+            {bgNumber ? (
               <div className="flex items-center gap-1 text-[10px] font-bold text-green-600 uppercase tracking-wider">
                 <ShieldCheck className="w-3 h-3" />
-                BG Atualizado
+                BG Nº {bgNumber}
               </div>
             ) : (
-              <div className="flex items-center gap-1 text-[10px] font-bold text-orange-600 uppercase tracking-wider">
-                <AlertCircle className="w-3 h-3" />
-                BG Pendente
+              <div className="flex items-center gap-1 text-[10px] font-bold text-[#5A5A40]/40 uppercase tracking-wider">
+                <FileText className="w-3 h-3" />
+                Aguardando BG
               </div>
             )}
           </div>
@@ -1037,11 +1168,21 @@ export default function App() {
               <header className="flex items-end justify-between">
                 <div>
                   <h2 className="text-5xl font-serif font-light mb-4">Verificação BG</h2>
-                  <p className="text-[#5A5A40] italic font-serif">
-                    {(user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') 
-                      ? "Carregue o Boletim Geral do dia para análise e compartilhamento." 
-                      : "Resultados da análise do último Boletim Geral carregado."}
-                  </p>
+                  <div className="flex flex-col gap-1">
+                    <p className="text-[#5A5A40] italic font-serif">
+                      {(user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') 
+                        ? "Carregue o Boletim Geral do dia para análise e compartilhamento." 
+                        : "Resultados da análise do último Boletim Geral carregado."}
+                    </p>
+                    {bgNumber && bgDate && (
+                      <div className="flex items-center gap-2 mt-2 bg-white/50 w-fit px-4 py-2 rounded-2xl border border-[#5A5A40]/10">
+                        <ShieldCheck className="w-4 h-4 text-green-600" />
+                        <span className="text-sm font-serif text-[#5A5A40]">
+                          Último BG disponível: <span className="font-bold">Nº {bgNumber}</span>, de <span className="font-bold">{bgDate}</span>
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </header>
 
@@ -1143,37 +1284,75 @@ export default function App() {
 
               {/* Upload Area (Admin Only) */}
               {(user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') && (
-                <div className="relative group">
-                  <input 
-                    type="file" 
-                    accept=".pdf" 
-                    onChange={onFileChange}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                    disabled={isProcessing}
-                  />
-                  <div className={cn(
-                    "border-2 border-dashed rounded-[40px] p-16 flex flex-col items-center justify-center transition-all duration-300",
-                    isProcessing ? "bg-white/50 border-[#5A5A40]/20" : "bg-white border-[#5A5A40]/10 group-hover:border-[#5A5A40]/40 group-hover:bg-white/80"
-                  )}>
-                    {isProcessing ? (
-                      <div className="text-center space-y-6">
-                        <div className="relative w-24 h-24 mx-auto">
-                          <Loader2 className="w-24 h-24 animate-spin text-[#5A5A40]" />
-                          <div className="absolute inset-0 flex items-center justify-center text-sm font-bold">
-                            {progress}%
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                      <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Número do BG</label>
+                      <input 
+                        type="text"
+                        placeholder="Ex: 065"
+                        value={uploadBgNumber}
+                        onChange={(e) => setUploadBgNumber(e.target.value)}
+                        className="w-full bg-white border border-black/5 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-[#5A5A40]/20 transition-all"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Data do BG</label>
+                      <input 
+                        type="text"
+                        placeholder="Ex: 07 de Abril de 2026"
+                        value={uploadBgDate}
+                        onChange={(e) => setUploadBgDate(e.target.value)}
+                        className="w-full bg-white border border-black/5 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-[#5A5A40]/20 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="relative group">
+                    <input 
+                      type="file" 
+                      accept=".pdf" 
+                      onChange={onFileChange}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                      disabled={isProcessing || !uploadBgNumber || !uploadBgDate}
+                    />
+                    <div className={cn(
+                      "border-2 border-dashed rounded-[40px] p-16 flex flex-col items-center justify-center transition-all duration-300",
+                      isProcessing ? "bg-white/50 border-[#5A5A40]/20" : 
+                      (!uploadBgNumber || !uploadBgDate) ? "bg-black/5 border-black/5 cursor-not-allowed" :
+                      "bg-white border-[#5A5A40]/10 group-hover:border-[#5A5A40]/40 group-hover:bg-white/80"
+                    )}>
+                      {isProcessing ? (
+                        <div className="text-center space-y-6">
+                          <div className="relative w-24 h-24 mx-auto">
+                            <Loader2 className="w-24 h-24 animate-spin text-[#5A5A40]" />
+                            <div className="absolute inset-0 flex items-center justify-center text-sm font-bold">
+                              {progress}%
+                            </div>
                           </div>
+                          <p className="text-xl font-serif italic text-[#5A5A40]">{processingMessage}</p>
                         </div>
-                        <p className="text-xl font-serif italic text-[#5A5A40]">Analisando documento...</p>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="w-20 h-20 bg-[#f5f5f0] rounded-full flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
-                          <Upload className="text-[#5A5A40] w-8 h-8" />
-                        </div>
-                        <p className="text-2xl font-serif mb-2">Arraste o PDF ou clique para selecionar</p>
-                        <p className="text-[#5A5A40]/60">Boletim Geral da PMRN (PDF)</p>
-                      </>
-                    )}
+                      ) : (
+                        <>
+                          <div className={cn(
+                            "w-20 h-20 rounded-full flex items-center justify-center mb-6 transition-transform",
+                            (!uploadBgNumber || !uploadBgDate) ? "bg-black/5" : "bg-[#f5f5f0] group-hover:scale-110"
+                          )}>
+                            <Upload className={cn(
+                              "w-8 h-8",
+                              (!uploadBgNumber || !uploadBgDate) ? "text-black/20" : "text-[#5A5A40]"
+                            )} />
+                          </div>
+                          <p className={cn(
+                            "text-2xl font-serif mb-2",
+                            (!uploadBgNumber || !uploadBgDate) ? "text-black/20" : "text-black"
+                          )}>
+                            {(!uploadBgNumber || !uploadBgDate) ? "Preencha o Número e Data acima" : "Arraste o PDF ou clique para selecionar"}
+                          </p>
+                          <p className="text-[#5A5A40]/60">Boletim Geral da PMRN (PDF)</p>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}
@@ -1360,7 +1539,8 @@ export default function App() {
                   {[
                     { id: 'officers', label: 'Policiais' },
                     { id: 'units', label: 'Unidades' },
-                    { id: 'terms', label: 'Termos' }
+                    { id: 'terms', label: 'Termos' },
+                    { id: 'admins', label: 'Administradores Gmail' }
                   ].map(tab => (
                     <button
                       key={tab.id}
@@ -1504,82 +1684,146 @@ export default function App() {
                     </button>
                   </form>
                 )}
+
+                {dbTab === 'admins' && (
+                  <div className="space-y-8">
+                    <div className="pb-6 border-b border-black/5">
+                      <h3 className="text-xl font-serif mb-2">Autorizar Administrador (Gmail)</h3>
+                      <p className="text-sm text-[#5A5A40]/60 italic">Estes usuários poderão acessar o sistema via Google Login, independente da lista de policiais.</p>
+                    </div>
+                    <form onSubmit={addAdmin} className="grid grid-cols-1 md:grid-cols-3 gap-6 items-end">
+                      <div className="md:col-span-2 space-y-2">
+                        <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">E-mail do Gmail</label>
+                        <input 
+                          required
+                          type="email"
+                          value={newAdminEmail}
+                          onChange={e => setNewAdminEmail(e.target.value)}
+                          className="w-full bg-[#f5f5f0] border-none rounded-2xl px-6 py-4 focus:ring-2 focus:ring-[#5A5A40]/20"
+                          placeholder="exemplo@gmail.com"
+                        />
+                      </div>
+                      <button type="submit" className="bg-[#5A5A40] text-white rounded-2xl py-4 flex items-center justify-center gap-2 hover:bg-[#4a4a35] transition-colors">
+                        <ShieldCheck className="w-5 h-5" />
+                        Autorizar Acesso
+                      </button>
+                    </form>
+
+                    <div className="mt-8">
+                      <h4 className="text-sm font-bold uppercase tracking-widest text-[#5A5A40]/40 mb-4">Administradores Autorizados</h4>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="bg-[#f5f5f0] p-4 rounded-2xl flex items-center justify-between border border-[#5A5A40]/10">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 bg-[#5A5A40] text-white rounded-full flex items-center justify-center">
+                              <ShieldCheck className="w-5 h-5" />
+                            </div>
+                            <div>
+                              <p className="font-bold text-sm">{ADMIN_EMAIL}</p>
+                              <p className="text-[10px] text-[#5A5A40]/60 uppercase font-bold tracking-widest">Administrador Mestre</p>
+                            </div>
+                          </div>
+                        </div>
+                        {authorizedAdmins.map(admin => (
+                          <div key={admin.id} className="bg-white p-4 rounded-2xl flex items-center justify-between border border-black/5 shadow-sm group">
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 bg-[#f5f5f0] text-[#5A5A40] rounded-full flex items-center justify-center">
+                                <UserIcon className="w-5 h-5" />
+                              </div>
+                              <div>
+                                <p className="font-bold text-sm">{admin.email}</p>
+                                <p className="text-[10px] text-[#5A5A40]/60 uppercase font-bold tracking-widest">Acesso via Gmail</p>
+                              </div>
+                            </div>
+                            <button 
+                              onClick={() => removeAdmin(admin.id, admin.email)}
+                              className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all opacity-0 group-hover:opacity-100"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Tables */}
-              <div className="bg-white rounded-[40px] overflow-hidden border border-black/5 shadow-sm">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-[#f5f5f0]/50 border-bottom border-black/5">
-                      {dbTab === 'officers' && (
-                        <>
-                          <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Nome</th>
-                          <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Matrícula</th>
-                          <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Unidade</th>
-                          <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Acesso</th>
-                        </>
-                      )}
-                      {dbTab === 'units' && (
-                        <>
-                          <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Nome</th>
-                          <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Sigla</th>
-                        </>
-                      )}
-                      {dbTab === 'terms' && (
-                        <>
-                          <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Termo</th>
-                          <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Categoria</th>
-                        </>
-                      )}
-                      <th className="px-8 py-6"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {dbTab === 'officers' && officers.map(off => (
-                      <tr key={off.id} className="border-t border-black/5 hover:bg-[#f5f5f0]/20 transition-colors">
-                        <td className="px-8 py-6 font-medium">{off.name}</td>
-                        <td className="px-8 py-6 font-mono text-sm">{off.registration}</td>
-                        <td className="px-8 py-6">{off.unit}</td>
-                        <td className="px-8 py-6">
-                          <span className={cn(
-                            "px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest",
-                            off.role === 'admin' ? "bg-[#5A5A40] text-white" : "bg-[#f5f5f0] text-[#5A5A40]/60"
-                          )}>
-                            {off.role === 'admin' ? 'Admin' : 'Usuário'}
-                          </span>
-                        </td>
-                        <td className="px-8 py-6 text-right">
-                          <button onClick={() => deleteItem('officers', off.id)} className="p-2 text-red-400 hover:text-red-600 transition-colors">
-                            <Trash2 className="w-5 h-5" />
-                          </button>
-                        </td>
+              {dbTab !== 'admins' && (
+                <div className="bg-white rounded-[40px] overflow-hidden border border-black/5 shadow-sm">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-[#f5f5f0]/50 border-bottom border-black/5">
+                        {dbTab === 'officers' && (
+                          <>
+                            <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Nome</th>
+                            <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Matrícula</th>
+                            <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Unidade</th>
+                            <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Acesso</th>
+                          </>
+                        )}
+                        {dbTab === 'units' && (
+                          <>
+                            <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Nome</th>
+                            <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Sigla</th>
+                          </>
+                        )}
+                        {dbTab === 'terms' && (
+                          <>
+                            <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Termo</th>
+                            <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Categoria</th>
+                          </>
+                        )}
+                        <th className="px-8 py-6"></th>
                       </tr>
-                    ))}
-                    {dbTab === 'units' && units.map(unit => (
-                      <tr key={unit.id} className="border-t border-black/5 hover:bg-[#f5f5f0]/20 transition-colors">
-                        <td className="px-8 py-6 font-medium">{unit.name}</td>
-                        <td className="px-8 py-6">{unit.acronym || '-'}</td>
-                        <td className="px-8 py-6 text-right">
-                          <button onClick={() => deleteItem('units', unit.id)} className="p-2 text-red-400 hover:text-red-600 transition-colors">
-                            <Trash2 className="w-5 h-5" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                    {dbTab === 'terms' && searchTerms.map(st => (
-                      <tr key={st.id} className="border-t border-black/5 hover:bg-[#f5f5f0]/20 transition-colors">
-                        <td className="px-8 py-6 font-medium">{st.term}</td>
-                        <td className="px-8 py-6">{st.category || '-'}</td>
-                        <td className="px-8 py-6 text-right">
-                          <button onClick={() => deleteItem('searchTerms', st.id)} className="p-2 text-red-400 hover:text-red-600 transition-colors">
-                            <Trash2 className="w-5 h-5" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {dbTab === 'officers' && officers.map(off => (
+                        <tr key={off.id} className="border-t border-black/5 hover:bg-[#f5f5f0]/20 transition-colors">
+                          <td className="px-8 py-6 font-medium">{off.name}</td>
+                          <td className="px-8 py-6 font-mono text-sm">{off.registration}</td>
+                          <td className="px-8 py-6">{off.unit}</td>
+                          <td className="px-8 py-6">
+                            <span className={cn(
+                              "px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest",
+                              off.role === 'admin' ? "bg-[#5A5A40] text-white" : "bg-[#f5f5f0] text-[#5A5A40]/60"
+                            )}>
+                              {off.role === 'admin' ? 'Admin' : 'Usuário'}
+                            </span>
+                          </td>
+                          <td className="px-8 py-6 text-right">
+                            <button onClick={() => deleteItem('officers', off.id)} className="p-2 text-red-400 hover:text-red-600 transition-colors">
+                              <Trash2 className="w-5 h-5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {dbTab === 'units' && units.map(unit => (
+                        <tr key={unit.id} className="border-t border-black/5 hover:bg-[#f5f5f0]/20 transition-colors">
+                          <td className="px-8 py-6 font-medium">{unit.name}</td>
+                          <td className="px-8 py-6">{unit.acronym || '-'}</td>
+                          <td className="px-8 py-6 text-right">
+                            <button onClick={() => deleteItem('units', unit.id)} className="p-2 text-red-400 hover:text-red-600 transition-colors">
+                              <Trash2 className="w-5 h-5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {dbTab === 'terms' && searchTerms.map(st => (
+                        <tr key={st.id} className="border-t border-black/5 hover:bg-[#f5f5f0]/20 transition-colors">
+                          <td className="px-8 py-6 font-medium">{st.term}</td>
+                          <td className="px-8 py-6">{st.category || '-'}</td>
+                          <td className="px-8 py-6 text-right">
+                            <button onClick={() => deleteItem('searchTerms', st.id)} className="p-2 text-red-400 hover:text-red-600 transition-colors">
+                              <Trash2 className="w-5 h-5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </motion.div>
           )}
 
@@ -1675,7 +1919,7 @@ function LoginScreen({ onLogin, onAdminLogin }: { onLogin: (reg: string, pass: s
           <div className="w-24 h-24 mb-6 relative">
             <div className="absolute inset-0 bg-[#5A5A40]/5 rounded-3xl -rotate-6"></div>
             <img 
-              src="https://firebasestorage.googleapis.com/v0/b/my-project-1571939616356.firebasestorage.app/o/bg_files%2Flogo_5bpm.png?alt=media" 
+              src="https://lh3.googleusercontent.com/d/1ZeVU9ZIkPN3wqDDLTMbTM3zuH1KnUMbl" 
               alt="5º BPM Logo" 
               className="w-full h-full object-contain relative z-10 rounded-2xl"
               referrerPolicy="no-referrer"
