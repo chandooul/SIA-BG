@@ -36,6 +36,7 @@ import {
   storage,
   ref,
   uploadBytes,
+  uploadBytesResumable,
   getDownloadURL,
   deleteObject,
   googleProvider, 
@@ -65,13 +66,15 @@ import {
   setDoc
 } from 'firebase/firestore';
 import * as pdfjsLib from 'pdfjs-dist';
+// @ts-ignore
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { Toaster, toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-// PDF.js worker setup - using a reliable CDN that matches the installed version
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+// PDF.js worker setup - using local worker bundled by Vite for maximum reliability
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -140,7 +143,7 @@ export default function App() {
   const [bgNumber, setBgNumber] = useState<string>('');
   const [bgDate, setBgDate] = useState<string>('');
   const [uploadBgNumber, setUploadBgNumber] = useState<string>('');
-  const [uploadBgDate, setUploadBgDate] = useState<string>('');
+  const [uploadBgDate, setUploadBgDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [progress, setProgress] = useState(0);
   const [processingMessage, setProcessingMessage] = useState('Analisando documento...');
 
@@ -757,15 +760,43 @@ export default function App() {
       // Upload to Firebase Storage
       console.log('Uploading PDF to Storage...');
       setProcessingMessage('Enviando arquivo para o servidor...');
-      setProgress(10); // Initial progress for upload
+      setProgress(10); 
       
       let downloadUrl = '';
       const sanitizedName = name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      
       try {
         const storageRef = ref(storage, `bg_files/${sanitizedName}`);
-        const uploadResult = await uploadBytes(storageRef, blob);
+        
+        // Use uploadBytesResumable for better progress tracking and timeout handling
+        const uploadTask = uploadBytesResumable(storageRef, blob);
+        
+        const uploadPromise = new Promise<string>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            uploadTask.cancel();
+            reject(new Error('timeout'));
+          }, 30000); // 30 seconds timeout
+
+          uploadTask.on('state_changed', 
+            (snapshot) => {
+              const uploadProgress = (snapshot.bytesTransferred / snapshot.totalBytes) * 30; // 0 to 30%
+              setProgress(Math.round(10 + uploadProgress));
+              setProcessingMessage(`Enviando: ${Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100)}%`);
+            }, 
+            (error) => {
+              clearTimeout(timeout);
+              reject(error);
+            }, 
+            async () => {
+              clearTimeout(timeout);
+              const url = await getDownloadURL(uploadTask.snapshot.ref);
+              resolve(url);
+            }
+          );
+        });
+
+        downloadUrl = await uploadPromise;
         console.log('PDF uploaded successfully');
-        downloadUrl = await getDownloadURL(uploadResult.ref);
         setPdfUrl(downloadUrl);
       } catch (storageErr: any) {
         console.error('Storage Upload Error:', storageErr);
@@ -773,8 +804,8 @@ export default function App() {
         downloadUrl = URL.createObjectURL(blob);
         setPdfUrl(downloadUrl);
         
-        if (storageErr.code === 'storage/retry-limit-exceeded') {
-          toast.error('O tempo limite de upload foi excedido. O arquivo será analisado localmente, mas não ficará salvo permanentemente.');
+        if (storageErr.message === 'timeout') {
+          toast.warning('O upload demorou muito. O arquivo será analisado localmente, mas não ficará salvo permanentemente.');
         } else if (storageErr.code === 'storage/unauthorized') {
           toast.error('Sem permissão para salvar no Storage. Verifique as regras de segurança no Console Firebase.');
         } else {
@@ -788,7 +819,7 @@ export default function App() {
       setProcessingMessage('Carregando motor de análise (PDF.js)...');
       const pdf = await pdfjsLib.getDocument({ 
         data,
-        cMapUrl: `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/cmaps/`,
+        cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@5.6.205/cmaps/',
         cMapPacked: true,
       }).promise;
       const numPages = pdf.numPages;
@@ -1000,6 +1031,22 @@ export default function App() {
     }
   };
 
+  const formatDate = (dateStr: string) => {
+    if (!dateStr) return '';
+    if (!dateStr.includes('-')) return dateStr; // Already formatted or different format
+    try {
+      const [year, month, day] = dateStr.split('-');
+      const date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+      return date.toLocaleDateString('pt-BR', {
+        day: '2-digit',
+        month: 'long',
+        year: 'numeric'
+      });
+    } catch (e) {
+      return dateStr;
+    }
+  };
+
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -1064,7 +1111,7 @@ export default function App() {
             {bgNumber ? (
               <div className="flex items-center gap-1 text-[10px] font-bold text-green-600 uppercase tracking-wider">
                 <ShieldCheck className="w-3 h-3" />
-                Atualizado: BG {bgNumber} de {bgDate}
+                Atualizado: BG {bgNumber} de {formatDate(bgDate)}
               </div>
             ) : (
               <div className="flex items-center gap-1 text-[10px] font-bold text-[#5A5A40]/40 uppercase tracking-wider">
@@ -1237,7 +1284,7 @@ export default function App() {
                       <div className="flex items-center gap-2 mt-2 bg-white/50 w-fit px-4 py-2 rounded-2xl border border-[#5A5A40]/10">
                         <ShieldCheck className="w-4 h-4 text-green-600" />
                         <span className="text-sm font-serif text-[#5A5A40]">
-                          Último BG disponível: <span className="font-bold">Nº {bgNumber}</span>, de <span className="font-bold">{bgDate}</span>
+                          Último BG disponível: <span className="font-bold">Nº {bgNumber}</span>, de <span className="font-bold">{formatDate(bgDate)}</span>
                         </span>
                       </div>
                     )}
@@ -1358,8 +1405,7 @@ export default function App() {
                     <div className="space-y-2">
                       <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Data do BG</label>
                       <input 
-                        type="text"
-                        placeholder="Ex: 07 de Abril de 2026"
+                        type="date"
                         value={uploadBgDate}
                         onChange={(e) => setUploadBgDate(e.target.value)}
                         className="w-full bg-white border border-black/5 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-[#5A5A40]/20 transition-all"
