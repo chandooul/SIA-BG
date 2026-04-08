@@ -31,7 +31,8 @@ import {
   Key,
   ShieldCheck,
   ExternalLink,
-  FileSearch
+  FileSearch,
+  ArrowLeft
 } from 'lucide-react';
 import { 
   auth, 
@@ -130,6 +131,10 @@ export default function App() {
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showProfileUpdate, setShowProfileUpdate] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [detailView, setDetailView] = useState<{
+    docType: 'BG' | 'ADITAMENTO';
+    category: 'officer' | 'unit' | 'term';
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'database' | 'settings' | 'keywords'>('dashboard');
   const [dbTab, setDbTab] = useState<'officers' | 'units' | 'terms' | 'admins'>('officers');
@@ -1557,7 +1562,9 @@ export default function App() {
               exit={{ opacity: 0, x: -20 }}
               className="space-y-12"
             >
-              <header className="flex flex-col md:flex-row md:items-end justify-between gap-8">
+              {!detailView ? (
+                <>
+                  <header className="flex flex-col md:flex-row md:items-end justify-between gap-8">
                 <div>
                   <h2 className="text-3xl md:text-5xl font-serif font-light mb-4">Painel de Verificação</h2>
                   <p className="text-[#5A5A40] italic font-serif max-w-2xl text-sm md:text-base">
@@ -1638,19 +1645,28 @@ export default function App() {
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <div className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm">
+                    <button 
+                      onClick={() => setDetailView({ docType: 'BG', category: 'officer' })}
+                      className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm hover:shadow-md hover:scale-[1.02] transition-all text-left group"
+                    >
                       <div className="flex items-center gap-4 mb-4">
-                        <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center">
+                        <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-colors">
                           <Users className="w-6 h-6" />
                         </div>
                         <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">Policiais</span>
                       </div>
                       <p className="text-4xl font-serif">{bgResults.filter(r => r.type === 'officer').length}</p>
-                      <p className="text-sm text-[#5A5A40]/60 mt-2">No Boletim Geral</p>
-                    </div>
-                    <div className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm">
+                      <div className="flex items-center justify-between mt-2">
+                        <p className="text-sm text-[#5A5A40]/60">No Boletim Geral</p>
+                        <ChevronRight className="w-4 h-4 text-[#5A5A40]/20 group-hover:text-[#5A5A40] transition-colors" />
+                      </div>
+                    </button>
+                    <button 
+                      onClick={() => setDetailView({ docType: 'BG', category: 'unit' })}
+                      className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm hover:shadow-md hover:scale-[1.02] transition-all text-left group"
+                    >
                       <div className="flex items-center gap-4 mb-4">
-                        <div className="w-12 h-12 bg-green-50 text-green-600 rounded-2xl flex items-center justify-center">
+                        <div className="w-12 h-12 bg-green-50 text-green-600 rounded-2xl flex items-center justify-center group-hover:bg-green-600 group-hover:text-white transition-colors">
                           <Building2 className="w-6 h-6" />
                         </div>
                         <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">5º BPM</span>
@@ -1664,11 +1680,17 @@ export default function App() {
                            normalizeText(r.match).includes('5batalhao'))
                         ).length}
                       </p>
-                      <p className="text-sm text-[#5A5A40]/60 mt-2">No Boletim Geral</p>
-                    </div>
-                    <div className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm">
+                      <div className="flex items-center justify-between mt-2">
+                        <p className="text-sm text-[#5A5A40]/60">No Boletim Geral</p>
+                        <ChevronRight className="w-4 h-4 text-[#5A5A40]/20 group-hover:text-[#5A5A40] transition-colors" />
+                      </div>
+                    </button>
+                    <button 
+                      onClick={() => setDetailView({ docType: 'BG', category: 'term' })}
+                      className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm hover:shadow-md hover:scale-[1.02] transition-all text-left group"
+                    >
                       <div className="flex items-center gap-4 mb-4">
-                        <div className="w-12 h-12 bg-orange-50 text-orange-600 rounded-2xl flex items-center justify-center">
+                        <div className="w-12 h-12 bg-orange-50 text-orange-600 rounded-2xl flex items-center justify-center group-hover:bg-orange-600 group-hover:text-white transition-colors">
                           <Search className="w-6 h-6" />
                         </div>
                         <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">Termos</span>
@@ -1676,50 +1698,11 @@ export default function App() {
                       <p className="text-4xl font-serif">
                         {bgResults.filter(r => r.type === 'term').length}
                       </p>
-                      <p className="text-sm text-[#5A5A40]/60 mt-2">No Boletim Geral</p>
-                    </div>
-                  </div>
-
-                  {/* Detailed BG Results */}
-                  <div className="bg-white rounded-[40px] border border-black/5 overflow-hidden shadow-sm">
-                    <div className="p-8 border-b border-black/5 bg-[#fcfcfc] flex items-center justify-between">
-                      <h4 className="text-xl font-serif font-bold">Detalhamento BG</h4>
-                      {bgPdfUrl && (
-                        <button 
-                          onClick={() => window.open(bgPdfUrl, '_blank')}
-                          className="text-xs font-bold uppercase tracking-widest text-[#5A5A40] hover:underline flex items-center gap-2"
-                        >
-                          <ExternalLink className="w-4 h-4" /> Ver PDF Original
-                        </button>
-                      )}
-                    </div>
-                    <div className="divide-y divide-black/5 max-h-[600px] overflow-y-auto custom-scrollbar">
-                      {bgResults.length > 0 ? (
-                        bgResults.map((res, i) => (
-                          <div key={i} className="p-8 hover:bg-[#fcfcfc] transition-colors group">
-                            <div className="flex items-start justify-between mb-4">
-                              <div className="flex items-center gap-4">
-                                <div className={cn(
-                                  "px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest",
-                                  res.type === 'officer' ? "bg-blue-50 text-blue-600" : 
-                                  res.type === 'unit' ? "bg-green-50 text-green-600" : "bg-orange-50 text-orange-600"
-                                )}>
-                                  {res.type === 'officer' ? 'Policial' : res.type === 'unit' ? 'Unidade' : 'Termo'}
-                                </div>
-                                <span className="text-xs font-bold text-[#5A5A40]/40 uppercase tracking-widest">Página {res.page}</span>
-                              </div>
-                            </div>
-                            <p className="text-xl font-serif font-bold mb-2 text-[#1a1a1a]">{res.match}</p>
-                            <p className="text-[#5A5A40]/70 italic font-serif leading-relaxed">"{res.context}"</p>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="p-16 text-center">
-                          <FileText className="w-12 h-12 text-[#5A5A40]/10 mx-auto mb-4" />
-                          <p className="text-[#5A5A40]/40 font-serif italic">Nenhuma identificação detalhada no BG.</p>
-                        </div>
-                      )}
-                    </div>
+                      <div className="flex items-center justify-between mt-2">
+                        <p className="text-sm text-[#5A5A40]/60">No Boletim Geral</p>
+                        <ChevronRight className="w-4 h-4 text-[#5A5A40]/20 group-hover:text-[#5A5A40] transition-colors" />
+                      </div>
+                    </button>
                   </div>
                 </div>
               )}
@@ -1743,19 +1726,28 @@ export default function App() {
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <div className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm">
+                    <button 
+                      onClick={() => setDetailView({ docType: 'ADITAMENTO', category: 'officer' })}
+                      className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm hover:shadow-md hover:scale-[1.02] transition-all text-left group"
+                    >
                       <div className="flex items-center gap-4 mb-4">
-                        <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center">
+                        <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-colors">
                           <Users className="w-6 h-6" />
                         </div>
                         <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">Policiais</span>
                       </div>
                       <p className="text-4xl font-serif">{aditamentoResults.filter(r => r.type === 'officer').length}</p>
-                      <p className="text-sm text-[#5A5A40]/60 mt-2">No Aditamento</p>
-                    </div>
-                    <div className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm">
+                      <div className="flex items-center justify-between mt-2">
+                        <p className="text-sm text-[#5A5A40]/60">No Aditamento</p>
+                        <ChevronRight className="w-4 h-4 text-[#5A5A40]/20 group-hover:text-[#5A5A40] transition-colors" />
+                      </div>
+                    </button>
+                    <button 
+                      onClick={() => setDetailView({ docType: 'ADITAMENTO', category: 'unit' })}
+                      className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm hover:shadow-md hover:scale-[1.02] transition-all text-left group"
+                    >
                       <div className="flex items-center gap-4 mb-4">
-                        <div className="w-12 h-12 bg-green-50 text-green-600 rounded-2xl flex items-center justify-center">
+                        <div className="w-12 h-12 bg-green-50 text-green-600 rounded-2xl flex items-center justify-center group-hover:bg-green-600 group-hover:text-white transition-colors">
                           <Building2 className="w-6 h-6" />
                         </div>
                         <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">5º BPM</span>
@@ -1769,11 +1761,17 @@ export default function App() {
                            normalizeText(r.match).includes('5batalhao'))
                         ).length}
                       </p>
-                      <p className="text-sm text-[#5A5A40]/60 mt-2">No Aditamento</p>
-                    </div>
-                    <div className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm">
+                      <div className="flex items-center justify-between mt-2">
+                        <p className="text-sm text-[#5A5A40]/60">No Aditamento</p>
+                        <ChevronRight className="w-4 h-4 text-[#5A5A40]/20 group-hover:text-[#5A5A40] transition-colors" />
+                      </div>
+                    </button>
+                    <button 
+                      onClick={() => setDetailView({ docType: 'ADITAMENTO', category: 'term' })}
+                      className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm hover:shadow-md hover:scale-[1.02] transition-all text-left group"
+                    >
                       <div className="flex items-center gap-4 mb-4">
-                        <div className="w-12 h-12 bg-orange-50 text-orange-600 rounded-2xl flex items-center justify-center">
+                        <div className="w-12 h-12 bg-orange-50 text-orange-600 rounded-2xl flex items-center justify-center group-hover:bg-orange-600 group-hover:text-white transition-colors">
                           <Search className="w-6 h-6" />
                         </div>
                         <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">Termos</span>
@@ -1781,50 +1779,11 @@ export default function App() {
                       <p className="text-4xl font-serif">
                         {aditamentoResults.filter(r => r.type === 'term').length}
                       </p>
-                      <p className="text-sm text-[#5A5A40]/60 mt-2">No Aditamento</p>
-                    </div>
-                  </div>
-
-                  {/* Detailed Aditamento Results */}
-                  <div className="bg-white rounded-[40px] border border-black/5 overflow-hidden shadow-sm">
-                    <div className="p-8 border-b border-black/5 bg-[#fcfcfc] flex items-center justify-between">
-                      <h4 className="text-xl font-serif font-bold">Detalhamento Aditamento</h4>
-                      {aditamentoPdfUrl && (
-                        <button 
-                          onClick={() => window.open(aditamentoPdfUrl, '_blank')}
-                          className="text-xs font-bold uppercase tracking-widest text-[#5A5A40] hover:underline flex items-center gap-2"
-                        >
-                          <ExternalLink className="w-4 h-4" /> Ver PDF Original
-                        </button>
-                      )}
-                    </div>
-                    <div className="divide-y divide-black/5 max-h-[600px] overflow-y-auto custom-scrollbar">
-                      {aditamentoResults.length > 0 ? (
-                        aditamentoResults.map((res, i) => (
-                          <div key={i} className="p-8 hover:bg-[#fcfcfc] transition-colors group">
-                            <div className="flex items-start justify-between mb-4">
-                              <div className="flex items-center gap-4">
-                                <div className={cn(
-                                  "px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest",
-                                  res.type === 'officer' ? "bg-blue-50 text-blue-600" : 
-                                  res.type === 'unit' ? "bg-green-50 text-green-600" : "bg-orange-50 text-orange-600"
-                                )}>
-                                  {res.type === 'officer' ? 'Policial' : res.type === 'unit' ? 'Unidade' : 'Termo'}
-                                </div>
-                                <span className="text-xs font-bold text-[#5A5A40]/40 uppercase tracking-widest">Página {res.page}</span>
-                              </div>
-                            </div>
-                            <p className="text-xl font-serif font-bold mb-2 text-[#1a1a1a]">{res.match}</p>
-                            <p className="text-[#5A5A40]/70 italic font-serif leading-relaxed">"{res.context}"</p>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="p-16 text-center">
-                          <FileText className="w-12 h-12 text-[#5A5A40]/10 mx-auto mb-4" />
-                          <p className="text-[#5A5A40]/40 font-serif italic">Nenhuma identificação detalhada no Aditamento.</p>
-                        </div>
-                      )}
-                    </div>
+                      <div className="flex items-center justify-between mt-2">
+                        <p className="text-sm text-[#5A5A40]/60">No Aditamento</p>
+                        <ChevronRight className="w-4 h-4 text-[#5A5A40]/20 group-hover:text-[#5A5A40] transition-colors" />
+                      </div>
+                    </button>
                   </div>
                 </div>
               )}
@@ -1935,7 +1894,101 @@ export default function App() {
                   </div>
                 </div>
               )}
+                </>
+              ) : (
+                <div className="space-y-8">
+                  <header className="flex items-center justify-between">
+                    <div className="flex items-center gap-6">
+                      <button 
+                        onClick={() => setDetailView(null)}
+                        className="w-12 h-12 bg-white rounded-2xl border border-black/5 flex items-center justify-center hover:bg-[#5A5A40] hover:text-white transition-all shadow-sm"
+                      >
+                        <ArrowLeft className="w-6 h-6" />
+                      </button>
+                      <div>
+                        <h2 className="text-3xl md:text-4xl font-serif font-light">
+                          Detalhamento: {detailView.docType}
+                        </h2>
+                        <p className="text-[#5A5A40] italic font-serif">
+                          Filtrado por: <span className="font-bold uppercase tracking-widest text-xs ml-1">
+                            {detailView.category === 'officer' ? 'Policiais' : detailView.category === 'unit' ? '5º BPM' : 'Termos'}
+                          </span>
+                        </p>
+                      </div>
+                    </div>
+                    {((detailView.docType === 'BG' && bgPdfUrl) || (detailView.docType === 'ADITAMENTO' && aditamentoPdfUrl)) && (
+                      <button 
+                        onClick={() => window.open(detailView.docType === 'BG' ? bgPdfUrl! : aditamentoPdfUrl!, '_blank')}
+                        className="hidden md:flex items-center gap-2 px-6 py-3 bg-white rounded-2xl border border-black/5 text-xs font-bold uppercase tracking-widest text-[#5A5A40] hover:bg-[#f5f5f0] transition-all"
+                      >
+                        <ExternalLink className="w-4 h-4" /> Ver PDF Original
+                      </button>
+                    )}
+                  </header>
 
+                  <div className="bg-white rounded-[40px] border border-black/5 overflow-hidden shadow-sm">
+                    <div className="divide-y divide-black/5 min-h-[400px]">
+                      {(detailView.docType === 'BG' ? bgResults : aditamentoResults)
+                        .filter(res => {
+                          if (detailView.category === 'officer') return res.type === 'officer';
+                          if (detailView.category === 'unit') {
+                            return res.type === 'unit' && 
+                              (normalizeText(res.match).includes('5 bpm') || 
+                               normalizeText(res.match).includes('5bpm') || 
+                               normalizeText(res.match).includes('5 batalhao') ||
+                               normalizeText(res.match).includes('5batalhao'));
+                          }
+                          if (detailView.category === 'term') return res.type === 'term';
+                          return true;
+                        })
+                        .length > 0 ? (
+                        (detailView.docType === 'BG' ? bgResults : aditamentoResults)
+                          .filter(res => {
+                            if (detailView.category === 'officer') return res.type === 'officer';
+                            if (detailView.category === 'unit') {
+                              return res.type === 'unit' && 
+                                (normalizeText(res.match).includes('5 bpm') || 
+                                 normalizeText(res.match).includes('5bpm') || 
+                                 normalizeText(res.match).includes('5 batalhao') ||
+                                 normalizeText(res.match).includes('5batalhao'));
+                            }
+                            if (detailView.category === 'term') return res.type === 'term';
+                            return true;
+                          })
+                          .map((res, i) => (
+                            <div key={i} className="p-8 hover:bg-[#fcfcfc] transition-colors group">
+                              <div className="flex items-start justify-between mb-4">
+                                <div className="flex items-center gap-4">
+                                  <div className={cn(
+                                    "px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest",
+                                    res.type === 'officer' ? "bg-blue-50 text-blue-600" : 
+                                    res.type === 'unit' ? "bg-green-50 text-green-600" : "bg-orange-50 text-orange-600"
+                                  )}>
+                                    {res.type === 'officer' ? 'Policial' : res.type === 'unit' ? 'Unidade' : 'Termo'}
+                                  </div>
+                                  <span className="text-xs font-bold text-[#5A5A40]/40 uppercase tracking-widest">Página {res.page}</span>
+                                </div>
+                              </div>
+                              <p className="text-xl font-serif font-bold mb-2 text-[#1a1a1a]">{res.match}</p>
+                              <p className="text-[#5A5A40]/70 italic font-serif leading-relaxed">"{res.context}"</p>
+                            </div>
+                          ))
+                      ) : (
+                        <div className="p-20 text-center">
+                          <FileSearch className="w-16 h-16 text-[#5A5A40]/10 mx-auto mb-6" />
+                          <p className="text-xl text-[#5A5A40]/40 font-serif italic">Nenhuma identificação encontrada para este filtro.</p>
+                          <button 
+                            onClick={() => setDetailView(null)}
+                            className="mt-8 px-8 py-4 bg-[#f5f5f0] text-[#5A5A40] font-bold rounded-2xl hover:bg-[#5A5A40] hover:text-white transition-all"
+                          >
+                            Voltar ao Painel
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
             </motion.div>
           )}
 
