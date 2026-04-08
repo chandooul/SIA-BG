@@ -148,6 +148,7 @@ export default function App() {
   const [newTerm, setNewTerm] = useState({ term: '', category: '' });
   const [isBulkUploading, setIsBulkUploading] = useState(false);
   const [newAdminEmail, setNewAdminEmail] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   // Auth Listener
   useEffect(() => {
@@ -238,7 +239,8 @@ export default function App() {
 
   const ADMIN_EMAIL = "chandooul@gmail.com";
 
-  const isAuthorizedAdmin = user?.email === ADMIN_EMAIL || authorizedAdmins.some(a => a.email === user?.email);
+  const isAuthorizedAdmin = (user?.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase()) || 
+                            authorizedAdmins.some(a => a.email.toLowerCase() === user?.email?.toLowerCase());
   const isAdmin = isAuthorizedAdmin || loggedInOfficer?.role === 'admin';
 
   useEffect(() => {
@@ -248,7 +250,10 @@ export default function App() {
   }, [isAdmin, activeTab, loading]);
 
   const handleLogin = async () => {
+    if (isLoggingIn) return;
+    setIsLoggingIn(true);
     console.log('Attempting Google login...');
+    
     try {
       const result = await signInWithPopup(auth, googleProvider);
       const loggedUser = result.user;
@@ -265,7 +270,7 @@ export default function App() {
             isAuthorized = true;
           }
         } catch (err) {
-          console.error('Error checking authorization:', err);
+          console.error('Error checking authorization document:', err);
         }
       }
       
@@ -278,13 +283,19 @@ export default function App() {
       }
     } catch (error: any) {
       console.error('Login error details:', error);
-      if (error.code === 'auth/popup-blocked') {
+      const errorCode = error.code;
+      
+      if (errorCode === 'auth/popup-blocked') {
         toast.error('O popup de login foi bloqueado pelo navegador. Por favor, permita popups para este site.');
-      } else if (error.code === 'auth/cancelled-popup-request') {
+      } else if (errorCode === 'auth/cancelled-popup-request') {
         // User closed the popup, no need for a loud error
+      } else if (errorCode === 'auth/unauthorized-domain') {
+        toast.error('Este domínio não está autorizado no Firebase. Verifique as configurações de domínio no console do Firebase.');
       } else {
-        toast.error(`Erro ao realizar login: ${error.message}`);
+        toast.error(`Erro ao realizar login (${errorCode}): ${error.message}`);
       }
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -989,7 +1000,7 @@ export default function App() {
   }
 
   if (!user && !loggedInOfficer) {
-    return <LoginScreen onLogin={handleOfficerLogin} onAdminLogin={handleLogin} />;
+    return <LoginScreen onLogin={handleOfficerLogin} onAdminLogin={handleLogin} isLoggingIn={isLoggingIn} />;
   }
 
   return (
@@ -1929,7 +1940,7 @@ export default function App() {
 
 // --- Components ---
 
-function LoginScreen({ onLogin, onAdminLogin }: { onLogin: (reg: string, pass: string) => void, onAdminLogin: () => void }) {
+function LoginScreen({ onLogin, onAdminLogin, isLoggingIn }: { onLogin: (reg: string, pass: string) => void, onAdminLogin: () => void, isLoggingIn: boolean }) {
   const [registration, setRegistration] = useState('');
   const [password, setPassword] = useState('');
 
@@ -1995,10 +2006,15 @@ function LoginScreen({ onLogin, onAdminLogin }: { onLogin: (reg: string, pass: s
         <div className="mt-10 pt-8 border-t border-black/5">
           <button 
             onClick={onAdminLogin}
-            className="w-full flex items-center justify-center gap-2 text-sm font-bold text-[#5A5A40]/60 hover:text-[#5A5A40] transition-colors"
+            disabled={isLoggingIn}
+            className="w-full flex items-center justify-center gap-2 text-sm font-bold text-[#5A5A40]/60 hover:text-[#5A5A40] transition-colors disabled:opacity-50"
           >
-            <LogIn className="w-4 h-4" />
-            Acesso Administrativo (Google)
+            {isLoggingIn ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <LogIn className="w-4 h-4" />
+            )}
+            {isLoggingIn ? 'Autenticando...' : 'Acesso Administrativo (Google)'}
           </button>
         </div>
       </motion.div>

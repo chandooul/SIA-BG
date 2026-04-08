@@ -29,13 +29,25 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isMasterAdmin() {
+      return isAuthenticated() && 
+             request.auth.token.email.lower() == "chandooul@gmail.com" && 
+             request.auth.token.email_verified == true;
+    }
+
+    function isAuthorizedAdmin() {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/authorized_admins/$(request.auth.token.email.lower()));
+    }
+
+    function isDatabaseAdmin() {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
     function isAdmin() {
-      return isAuthenticated() && (
-        (request.auth.token.email.lower() == "chandooul@gmail.com" && request.auth.token.email_verified == true) ||
-        exists(/databases/$(database)/documents/authorized_admins/$(request.auth.token.email.lower())) ||
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
-      );
+      return isMasterAdmin() || isAuthorizedAdmin() || isDatabaseAdmin();
     }
 
     function hasRequiredFields(fields) {
@@ -106,7 +118,7 @@ service cloud.firestore {
     }
 
     match /authorized_admins/{adminEmail} {
-      allow read: if isAdmin();
+      allow read: if isAuthenticated() && (request.auth.token.email.lower() == adminEmail || isAdmin());
       allow write: if isAdmin() && adminEmail == adminEmail.lower();
     }
   }
