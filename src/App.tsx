@@ -1064,7 +1064,7 @@ export default function App() {
             {bgNumber ? (
               <div className="flex items-center gap-1 text-[10px] font-bold text-green-600 uppercase tracking-wider">
                 <ShieldCheck className="w-3 h-3" />
-                BG Nº {bgNumber}
+                Atualizado: BG {bgNumber} de {bgDate}
               </div>
             ) : (
               <div className="flex items-center gap-1 text-[10px] font-bold text-[#5A5A40]/40 uppercase tracking-wider">
