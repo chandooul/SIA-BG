@@ -293,13 +293,15 @@ export default function App() {
       const errorCode = error.code;
       
       if (errorCode === 'auth/popup-blocked') {
-        toast.error('O popup de login foi bloqueado. Por favor, permita popups para este site.');
+        toast.error('O popup de login foi bloqueado. Por favor, permita popups para este site nas configurações do seu navegador.');
       } else if (errorCode === 'auth/cancelled-popup-request' || errorCode === 'auth/popup-closed-by-user') {
-        toast.error('O login foi cancelado ou a janela foi fechada precocemente.');
+        toast.error('A janela de login foi fechada antes da conclusão.');
       } else if (errorCode === 'auth/unauthorized-domain') {
-        toast.error('Domínio não autorizado no Firebase. O administrador precisa adicionar o domínio atual nas configurações do Firebase Console.');
+        toast.error('ERRO CRÍTICO: Domínio não autorizado. Você precisa adicionar este endereço nas configurações do Firebase Console (Authentication > Settings > Authorized domains).');
       } else if (errorCode === 'auth/network-request-failed') {
-        toast.error('Erro de rede. Verifique sua conexão ou se há bloqueadores de anúncios (AdBlock) interferindo.');
+        toast.error('Erro de rede. Verifique sua conexão ou se há um Firewall/AdBlock bloqueando o Firebase.');
+      } else if (errorCode === 'auth/operation-not-allowed') {
+        toast.error('O login via Google não está ativado no seu projeto Firebase.');
       } else {
         toast.error(`Erro no login (${errorCode}): ${error.message}`);
       }
@@ -758,8 +760,9 @@ export default function App() {
       setProgress(10); // Initial progress for upload
       
       let downloadUrl = '';
+      const sanitizedName = name.replace(/[^a-zA-Z0-9._-]/g, '_');
       try {
-        const storageRef = ref(storage, `bg_files/${name}`);
+        const storageRef = ref(storage, `bg_files/${sanitizedName}`);
         const uploadResult = await uploadBytes(storageRef, blob);
         console.log('PDF uploaded successfully');
         downloadUrl = await getDownloadURL(uploadResult.ref);
@@ -949,8 +952,10 @@ export default function App() {
               bgNumber: uploadBgNumber,
               bgDate: uploadBgDate
             });
+            toast.success('Análise salva com sucesso no banco de dados!');
           } catch (error) {
-            handleFirestoreError(error, OperationType.WRITE, 'bg_analysis/latest');
+            console.error('Erro ao salvar análise:', error);
+            toast.error('O arquivo foi processado, mas não pôde ser salvo no banco de dados. Verifique suas permissões.');
           }
         }
       } else {
@@ -969,8 +974,10 @@ export default function App() {
               bgNumber: uploadBgNumber,
               bgDate: uploadBgDate
             });
+            toast.success('Análise salva com sucesso no banco de dados!');
           } catch (error) {
-            handleFirestoreError(error, OperationType.WRITE, 'bg_analysis/latest');
+            console.error('Erro ao salvar análise:', error);
+            toast.error('O arquivo foi processado, mas não pôde ser salvo no banco de dados. Verifique suas permissões.');
           }
         }
       }
@@ -996,7 +1003,14 @@ export default function App() {
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      file.arrayBuffer().then(data => processPDF(data, file.name));
+      if (file.size > 50 * 1024 * 1024) { // 50MB limit
+        toast.error('O arquivo é muito grande. O limite é de 50MB.');
+        return;
+      }
+      file.arrayBuffer().then(data => processPDF(data, file.name)).catch(err => {
+        console.error('Erro ao ler arquivo:', err);
+        toast.error('Erro ao ler o arquivo selecionado.');
+      });
     }
   };
 
@@ -1952,6 +1966,9 @@ export default function App() {
 function LoginScreen({ onLogin, onAdminLogin, isLoggingIn }: { onLogin: (reg: string, pass: string) => void, onAdminLogin: () => void, isLoggingIn: boolean }) {
   const [registration, setRegistration] = useState('');
   const [password, setPassword] = useState('');
+  const [showTroubleshooting, setShowTroubleshooting] = useState(false);
+
+  const currentDomain = window.location.hostname;
 
   return (
     <div className="min-h-screen bg-[#f5f5f0] flex items-center justify-center p-6">
@@ -2012,7 +2029,7 @@ function LoginScreen({ onLogin, onAdminLogin, isLoggingIn }: { onLogin: (reg: st
           </button>
         </form>
 
-        <div className="mt-10 pt-8 border-t border-black/5">
+        <div className="mt-10 pt-8 border-t border-black/5 space-y-4">
           <button 
             onClick={onAdminLogin}
             disabled={isLoggingIn}
@@ -2025,6 +2042,35 @@ function LoginScreen({ onLogin, onAdminLogin, isLoggingIn }: { onLogin: (reg: st
             )}
             {isLoggingIn ? 'Autenticando...' : 'Acesso Administrativo (Google)'}
           </button>
+
+          <div className="text-center">
+            <button 
+              onClick={() => setShowTroubleshooting(!showTroubleshooting)}
+              className="text-[10px] text-[#5A5A40]/40 hover:underline"
+            >
+              Problemas com o login Google?
+            </button>
+          </div>
+
+          {showTroubleshooting && (
+            <motion.div 
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              className="bg-red-50 border border-red-100 rounded-2xl p-4 text-[11px] text-red-800 space-y-2"
+            >
+              <p className="font-bold">Se a tela do Google "pisca e some":</p>
+              <p>Você precisa autorizar este domínio no Console do Firebase:</p>
+              <div className="bg-white/50 p-2 rounded font-mono break-all select-all">
+                {currentDomain}
+              </div>
+              <p>Passos:</p>
+              <ol className="list-decimal ml-4 space-y-1">
+                <li>Acesse o <a href="https://console.firebase.google.com/" target="_blank" className="underline font-bold">Console Firebase</a></li>
+                <li>Vá em <b>Authentication</b> {'>'} <b>Settings</b> {'>'} <b>Authorized domains</b></li>
+                <li>Clique em <b>Add domain</b> e cole o endereço acima</li>
+              </ol>
+            </motion.div>
+          )}
         </div>
       </motion.div>
     </div>
