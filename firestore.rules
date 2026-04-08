@@ -31,12 +31,14 @@ service cloud.firestore {
 
     function isMasterAdmin() {
       return isAuthenticated() && 
+             request.auth.token.get('email', '') != '' &&
              request.auth.token.email.lower() == "chandooul@gmail.com" && 
              request.auth.token.email_verified == true;
     }
 
     function isAuthorizedAdmin() {
       return isAuthenticated() && 
+             request.auth.token.get('email', '') != '' &&
              exists(/databases/$(database)/documents/authorized_admins/$(request.auth.token.email.lower()));
     }
 
@@ -50,6 +52,12 @@ service cloud.firestore {
       return isMasterAdmin() || isAuthorizedAdmin() || isDatabaseAdmin();
     }
 
+    function isOfficerOwner(officerId) {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.officerId == officerId;
+    }
+
     function hasRequiredFields(fields) {
       return request.resource.data.keys().hasAll(fields);
     }
@@ -59,7 +67,9 @@ service cloud.firestore {
              data.registration is string && data.registration.size() > 0 && data.registration.size() < 50 &&
              data.unit is string && data.unit.size() > 0 && data.unit.size() < 200 &&
              (!('password' in data) || (data.password is string && data.password.size() < 100)) &&
-             (!('keywords' in data) || (data.keywords is list && data.keywords.size() < 50));
+             (!('keywords' in data) || (data.keywords is list && data.keywords.size() < 50)) &&
+             (!('email' in data) || (data.email is string && data.email.size() < 100)) &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() < 50));
     }
 
     function isValidUnit(data) {
@@ -102,7 +112,7 @@ service cloud.firestore {
 
     match /officers/{officerId} {
       allow read: if true;
-      allow update: if isAdmin() || (isAuthenticated() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['password', 'isFirstAccess', 'keywords']));
+      allow update: if isAdmin() || (isOfficerOwner(officerId) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['password', 'isFirstAccess', 'keywords', 'email', 'phone']));
       allow create, delete: if isAdmin();
     }
 

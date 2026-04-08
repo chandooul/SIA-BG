@@ -271,7 +271,7 @@ export default function App() {
 
   // Admin Listener - reacts to user login
   useEffect(() => {
-    if (!user) {
+    if (!user || user.isAnonymous) {
       setAuthorizedAdmins([]);
       return;
     }
@@ -427,13 +427,17 @@ export default function App() {
   const handlePasswordChange = async (newPassword: string) => {
     if (!loggedInOfficer) return;
     
+    const path = `officers/${loggedInOfficer.id}`;
     try {
       const officerRef = doc(db, 'officers', loggedInOfficer.id);
-      await setDoc(officerRef, { 
-        ...loggedInOfficer, 
-        password: newPassword, 
-        isFirstAccess: false 
-      }, { merge: true });
+      try {
+        await setDoc(officerRef, { 
+          password: newPassword, 
+          isFirstAccess: false 
+        }, { merge: true });
+      } catch (fsErr) {
+        handleFirestoreError(fsErr, OperationType.WRITE, path);
+      }
       
       const updatedOfficer = { ...loggedInOfficer, password: newPassword, isFirstAccess: false };
       setLoggedInOfficer(updatedOfficer);
@@ -441,21 +445,25 @@ export default function App() {
       setShowChangePassword(false);
       toast.success('Senha alterada com sucesso!');
     } catch (err) {
-      console.error(err);
-      toast.error('Erro ao alterar senha.');
+      console.error('Password Change Error:', err);
+      toast.error('Erro ao alterar senha. Verifique sua conexão ou permissões.');
     }
   };
 
   const handleProfileUpdate = async (email: string, phone: string) => {
     if (!loggedInOfficer) return;
     
+    const path = `officers/${loggedInOfficer.id}`;
     try {
       const officerRef = doc(db, 'officers', loggedInOfficer.id);
-      await setDoc(officerRef, { 
-        ...loggedInOfficer, 
-        email, 
-        phone 
-      }, { merge: true });
+      try {
+        await setDoc(officerRef, { 
+          email, 
+          phone 
+        }, { merge: true });
+      } catch (fsErr) {
+        handleFirestoreError(fsErr, OperationType.WRITE, path);
+      }
       
       const updatedOfficer = { ...loggedInOfficer, email, phone };
       setLoggedInOfficer(updatedOfficer);
@@ -463,25 +471,30 @@ export default function App() {
       setShowProfileUpdate(false);
       toast.success('Dados cadastrais atualizados com sucesso!');
     } catch (err) {
-      console.error(err);
-      toast.error('Erro ao atualizar dados cadastrais.');
+      console.error('Profile Update Error:', err);
+      toast.error('Erro ao atualizar dados cadastrais. Verifique sua conexão ou permissões.');
     }
   };
 
   const updateKeywords = async (keywords: string[]) => {
     if (!loggedInOfficer) return;
     
+    const path = `officers/${loggedInOfficer.id}`;
     try {
       const officerRef = doc(db, 'officers', loggedInOfficer.id);
-      await setDoc(officerRef, { keywords }, { merge: true });
+      try {
+        await setDoc(officerRef, { keywords }, { merge: true });
+      } catch (fsErr) {
+        handleFirestoreError(fsErr, OperationType.WRITE, path);
+      }
       
       const updatedOfficer = { ...loggedInOfficer, keywords };
       setLoggedInOfficer(updatedOfficer);
       localStorage.setItem('officer_session', JSON.stringify(updatedOfficer));
       toast.success('Palavras-chave atualizadas!');
     } catch (err) {
-      console.error(err);
-      toast.error('Erro ao atualizar palavras-chave.');
+      console.error('Update Keywords Error:', err);
+      toast.error('Erro ao atualizar palavras-chave. Verifique sua conexão ou permissões.');
     }
   };
 
@@ -700,17 +713,16 @@ export default function App() {
     }
 
     const personalResults: any[] = [];
-    const combinedResults = [...bgResults, ...aditamentoResults];
-    const combinedFullText = [...bgFullText, ...aditamentoFullText];
     
     // 1. Check global results for matches with current user (Cross-referencing)
-    combinedResults.forEach(res => {
+    bgResults.forEach(res => {
       if (res.type === 'officer' && res.metadata) {
         const isMatch = res.metadata.registration === loggedInOfficer.registration || 
                         res.metadata.name === loggedInOfficer.name;
         if (isMatch) {
           personalResults.push({
             ...res,
+            docType: 'BG',
             label: 'Identificado via Banco de Dados'
           });
         }
@@ -718,12 +730,39 @@ export default function App() {
       if (res.type === 'unit' && res.match === loggedInOfficer.unit) {
         personalResults.push({
           ...res,
+          docType: 'BG',
+          label: 'Sua Unidade Identificada'
+        });
+      }
+    });
+
+    aditamentoResults.forEach(res => {
+      if (res.type === 'officer' && res.metadata) {
+        const isMatch = res.metadata.registration === loggedInOfficer.registration || 
+                        res.metadata.name === loggedInOfficer.name;
+        if (isMatch) {
+          personalResults.push({
+            ...res,
+            docType: 'ADITAMENTO',
+            label: 'Identificado via Banco de Dados'
+          });
+        }
+      }
+      if (res.type === 'unit' && res.match === loggedInOfficer.unit) {
+        personalResults.push({
+          ...res,
+          docType: 'ADITAMENTO',
           label: 'Sua Unidade Identificada'
         });
       }
     });
 
     // 2. Search fullText for keywords (to catch things not in global results or newly added)
+    const combinedFullText = [
+      ...bgFullText.map(p => ({ ...p, docType: 'BG' })),
+      ...aditamentoFullText.map(p => ({ ...p, docType: 'ADITAMENTO' }))
+    ];
+
     if (combinedFullText.length) {
       const keywords = loggedInOfficer.keywords || [];
       const identifiers = [
@@ -735,6 +774,7 @@ export default function App() {
         const text = pageData.text;
         const textNormalized = normalizeText(text);
         const textFuzzy = normalizeTextFuzzy(text);
+        const docType = (pageData as any).docType;
 
         // Search for keywords
         keywords.forEach(kw => {
@@ -756,6 +796,7 @@ export default function App() {
               match: kw,
               context: context ? `...${context}...` : 'Menção encontrada no texto.',
               page: pageData.page,
+              docType,
               label: 'Palavra-chave Pessoal'
             });
           }
@@ -781,6 +822,7 @@ export default function App() {
               match: id,
               context: context ? `...${context}...` : 'Menção encontrada no texto.',
               page: pageData.page,
+              docType,
               label: id === loggedInOfficer.registration ? 'Sua Matrícula' : 'Seu Nome'
             });
           }
@@ -1573,59 +1615,6 @@ export default function App() {
                 </div>
               </header>
 
-              {/* User Highlight Summary - Combined */}
-              {loggedInOfficer && (bgFileName || aditamentoFileName) && (
-                <motion.div 
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className={cn(
-                    "rounded-[32px] md:rounded-[40px] p-6 md:p-10 border-2 transition-all duration-500",
-                    userSpecificResults.length > 0 
-                      ? "bg-red-50 border-red-200 shadow-xl shadow-red-900/5" 
-                      : "bg-green-50 border-green-200 shadow-xl shadow-green-900/5"
-                  )}
-                >
-                  <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6 mb-8">
-                    <div className="flex items-center gap-4 md:gap-6">
-                      <div className={cn(
-                        "w-14 h-14 md:w-20 md:h-20 rounded-2xl md:rounded-3xl flex items-center justify-center animate-pulse shrink-0",
-                        userSpecificResults.length > 0 ? "bg-red-500 text-white" : "bg-green-500 text-white"
-                      )}>
-                        {userSpecificResults.length > 0 ? <AlertCircle className="w-6 h-6 md:w-10 md:h-10" /> : <CheckCircle2 className="w-6 h-6 md:w-10 md:h-10" />}
-                      </div>
-                      <div>
-                        <h3 className="text-2xl md:text-4xl font-serif font-bold mb-1 md:mb-2">
-                          {userSpecificResults.length > 0 ? 'Atenção: Menções Encontradas!' : 'Nada Consta nos Documentos'}
-                        </h3>
-                        <p className={cn(
-                          "text-sm md:text-lg font-serif italic",
-                          userSpecificResults.length > 0 ? "text-red-700" : "text-green-700"
-                        )}>
-                          {userSpecificResults.length > 0 
-                            ? 'Confira abaixo as ocorrências identificadas tanto no Boletim Geral quanto no Aditamento.' 
-                            : 'Seu nome, matrícula e palavras-chave não foram encontrados nos documentos atuais.'}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  {userSpecificResults.length > 0 && (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {userSpecificResults.map((res, i) => (
-                        <div key={i} className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 border border-red-100">
-                          <div className="flex items-center justify-between mb-3">
-                            <span className="text-xs font-bold uppercase tracking-widest text-red-600">{res.label}</span>
-                            <span className="text-xs font-bold bg-red-100 text-red-700 px-2 py-1 rounded-lg">Pág. {res.page}</span>
-                          </div>
-                          <p className="font-bold text-red-900 mb-2">{res.match}</p>
-                          <p className="text-sm text-red-800/70 italic line-clamp-2">{res.context}</p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </motion.div>
-              )}
-
               {/* BG Results Section */}
               {bgFileName && (
                 <div className="space-y-8 pt-8 border-t border-black/5">
@@ -1925,6 +1914,64 @@ export default function App() {
                       </button>
                     )}
                   </header>
+
+                  {/* User Highlight Summary - Moved to Termos Detail View */}
+                  {detailView.category === 'term' && loggedInOfficer && (
+                    <div className="mb-8">
+                      {(() => {
+                        const filteredPersonal = userSpecificResults.filter(r => r.docType === detailView.docType);
+                        return (
+                          <motion.div 
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className={cn(
+                              "rounded-[32px] p-6 md:p-8 border-2 transition-all duration-500",
+                              filteredPersonal.length > 0 
+                                ? "bg-red-50 border-red-200 shadow-sm" 
+                                : "bg-green-50 border-green-200 shadow-sm"
+                            )}
+                          >
+                            <div className="flex items-center gap-4 mb-6">
+                              <div className={cn(
+                                "w-12 h-12 rounded-2xl flex items-center justify-center shrink-0",
+                                filteredPersonal.length > 0 ? "bg-red-500 text-white" : "bg-green-500 text-white"
+                              )}>
+                                {filteredPersonal.length > 0 ? <AlertCircle className="w-6 h-6" /> : <CheckCircle2 className="w-6 h-6" />}
+                              </div>
+                              <div>
+                                <h3 className="text-xl font-serif font-bold">
+                                  {filteredPersonal.length > 0 ? 'Menções Pessoais Identificadas' : 'Nada Consta para Você'}
+                                </h3>
+                                <p className={cn(
+                                  "text-sm font-serif italic",
+                                  filteredPersonal.length > 0 ? "text-red-700" : "text-green-700"
+                                )}>
+                                  {filteredPersonal.length > 0 
+                                    ? `Identificamos ${filteredPersonal.length} ocorrência(s) relacionadas aos seus dados neste documento.` 
+                                    : 'Nenhuma menção ao seu nome, matrícula ou palavras-chave neste documento.'}
+                                </p>
+                              </div>
+                            </div>
+
+                            {filteredPersonal.length > 0 && (
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {filteredPersonal.map((res, i) => (
+                                  <div key={i} className="bg-white/60 backdrop-blur-sm rounded-xl p-4 border border-red-100">
+                                    <div className="flex items-center justify-between mb-2">
+                                      <span className="text-[10px] font-bold uppercase tracking-widest text-red-600">{res.label}</span>
+                                      <span className="text-[10px] font-bold bg-red-100 text-red-700 px-2 py-0.5 rounded">Pág. {res.page}</span>
+                                    </div>
+                                    <p className="font-bold text-red-900 text-sm mb-1">{res.match}</p>
+                                    <p className="text-xs text-red-800/70 italic line-clamp-2">{res.context}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </motion.div>
+                        );
+                      })()}
+                    </div>
+                  )}
 
                   <div className="bg-white rounded-[40px] border border-black/5 overflow-hidden shadow-sm">
                     <div className="divide-y divide-black/5 min-h-[400px]">
