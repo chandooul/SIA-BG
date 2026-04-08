@@ -250,12 +250,15 @@ export default function App() {
   }, [isAdmin, activeTab, loading]);
 
   const handleLogin = async () => {
-    if (isLoggingIn) return;
-    setIsLoggingIn(true);
-    console.log('Attempting Google login...');
+    console.log('Login button clicked, initiating Google Auth...');
     
+    // IMPORTANT: We call signInWithPopup as the VERY FIRST async action
+    // to preserve the user gesture and prevent browser popup blockers.
     try {
       const result = await signInWithPopup(auth, googleProvider);
+      
+      // Once the popup is open/resolved, we can update UI state
+      setIsLoggingIn(true);
       const loggedUser = result.user;
       const email = loggedUser.email?.toLowerCase() || '';
       console.log('Login successful for:', email);
@@ -286,13 +289,13 @@ export default function App() {
       const errorCode = error.code;
       
       if (errorCode === 'auth/popup-blocked') {
-        toast.error('O popup de login foi bloqueado pelo navegador. Por favor, permita popups para este site.');
-      } else if (errorCode === 'auth/cancelled-popup-request') {
+        toast.error('O popup de login foi bloqueado pelo seu navegador. Por favor, clique no ícone de bloqueio na barra de endereços e permita popups para este site.');
+      } else if (errorCode === 'auth/cancelled-popup-request' || errorCode === 'auth/popup-closed-by-user') {
         // User closed the popup, no need for a loud error
       } else if (errorCode === 'auth/unauthorized-domain') {
-        toast.error('Este domínio não está autorizado no Firebase. Verifique as configurações de domínio no console do Firebase.');
+        toast.error('Domínio não autorizado. O administrador precisa adicionar este domínio nas configurações do Firebase Auth.');
       } else {
-        toast.error(`Erro ao realizar login (${errorCode}): ${error.message}`);
+        toast.error(`Erro no login (${errorCode}): ${error.message}`);
       }
     } finally {
       setIsLoggingIn(false);
