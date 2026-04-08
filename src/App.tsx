@@ -47,7 +47,9 @@ import {
   signInWithPopup, 
   signOut, 
   onAuthStateChanged, 
-  User 
+  User,
+  GoogleAuthProvider,
+  browserPopupRedirectResolver
 } from 'firebase/auth';
 import { 
   collection, 
@@ -252,12 +254,14 @@ export default function App() {
   const handleLogin = async () => {
     console.log('Login button clicked, initiating Google Auth...');
     
-    // IMPORTANT: We call signInWithPopup as the VERY FIRST async action
-    // to preserve the user gesture and prevent browser popup blockers.
+    // Create a fresh provider instance
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
+    
     try {
-      const result = await signInWithPopup(auth, googleProvider);
+      // Use browserPopupRedirectResolver to help with iframe/popup communication issues
+      const result = await signInWithPopup(auth, provider, browserPopupRedirectResolver);
       
-      // Once the popup is open/resolved, we can update UI state
       setIsLoggingIn(true);
       const loggedUser = result.user;
       const email = loggedUser.email?.toLowerCase() || '';
@@ -289,11 +293,13 @@ export default function App() {
       const errorCode = error.code;
       
       if (errorCode === 'auth/popup-blocked') {
-        toast.error('O popup de login foi bloqueado pelo seu navegador. Por favor, clique no ícone de bloqueio na barra de endereços e permita popups para este site.');
+        toast.error('O popup de login foi bloqueado. Por favor, permita popups para este site.');
       } else if (errorCode === 'auth/cancelled-popup-request' || errorCode === 'auth/popup-closed-by-user') {
-        // User closed the popup, no need for a loud error
+        toast.error('O login foi cancelado ou a janela foi fechada precocemente.');
       } else if (errorCode === 'auth/unauthorized-domain') {
-        toast.error('Domínio não autorizado. O administrador precisa adicionar este domínio nas configurações do Firebase Auth.');
+        toast.error('Domínio não autorizado no Firebase. O administrador precisa adicionar o domínio atual nas configurações do Firebase Console.');
+      } else if (errorCode === 'auth/network-request-failed') {
+        toast.error('Erro de rede. Verifique sua conexão ou se há bloqueadores de anúncios (AdBlock) interferindo.');
       } else {
         toast.error(`Erro no login (${errorCode}): ${error.message}`);
       }
