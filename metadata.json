@@ -1,5 +1,5 @@
 {
-  "name": "SIA-BG: Sistema de Identificação Automatizada",
-  "description": "Sistema para leitura de Boletins Gerais da PMRN, identificando automaticamente policiais, instituições e termos personalizados.",
+  "name": "SIA-PMRN: Sistema de Identificação Automatizada",
+  "description": "Sistema para leitura de Boletins Gerais e Aditamentos da PMRN, identificando automaticamente policiais, instituições e termos personalizados.",
   "requestFramePermissions": []
 }

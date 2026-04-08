@@ -80,6 +80,7 @@ service cloud.firestore {
              (!('uploadedBy' in data) || data.uploadedBy is string) &&
              (!('bgNumber' in data) || data.bgNumber is string) &&
              (!('bgDate' in data) || data.bgDate is string) &&
+             (!('docType' in data) || data.docType is string) &&
              (!('fullText' in data) || data.fullText is list);
     }
 

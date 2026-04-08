@@ -26,9 +26,12 @@ import {
   Globe,
   Tag,
   X,
+  Menu,
   User as UserIcon,
   Key,
-  ShieldCheck
+  ShieldCheck,
+  ExternalLink,
+  FileSearch
 } from 'lucide-react';
 import { 
   auth, 
@@ -88,6 +91,8 @@ interface Officer {
   unit: string;
   rank?: string;
   password?: string;
+  email?: string;
+  phone?: string;
   isFirstAccess?: boolean;
   keywords?: string[];
   role?: 'admin' | 'user';
@@ -123,6 +128,8 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loggedInOfficer, setLoggedInOfficer] = useState<Officer | null>(null);
   const [showChangePassword, setShowChangePassword] = useState(false);
+  const [showProfileUpdate, setShowProfileUpdate] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'database' | 'settings' | 'keywords'>('dashboard');
   const [dbTab, setDbTab] = useState<'officers' | 'units' | 'terms' | 'admins'>('officers');
@@ -135,17 +142,33 @@ export default function App() {
   
   // Processing State
   const [isProcessing, setIsProcessing] = useState(false);
-  const [results, setResults] = useState<IdentificationResult[]>([]);
-  const [fullText, setFullText] = useState<{page: number, text: string}[]>([]);
-  const [userSpecificResults, setUserSpecificResults] = useState<any[]>([]);
-  const [fileName, setFileName] = useState<string | null>(null);
-  const [uploadedAt, setUploadedAt] = useState<string | null>(null);
-  const [bgNumber, setBgNumber] = useState<string>('');
-  const [bgDate, setBgDate] = useState<string>('');
-  const [uploadBgNumber, setUploadBgNumber] = useState<string>('');
-  const [uploadBgDate, setUploadBgDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [progress, setProgress] = useState(0);
   const [processingMessage, setProcessingMessage] = useState('Analisando documento...');
+  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null); // Current processing URL
+  
+  // BG Analysis State
+  const [bgResults, setBgResults] = useState<IdentificationResult[]>([]);
+  const [bgFullText, setBgFullText] = useState<{page: number, text: string}[]>([]);
+  const [bgFileName, setBgFileName] = useState<string | null>(null);
+  const [bgUploadedAt, setBgUploadedAt] = useState<string | null>(null);
+  const [bgNumber, setBgNumber] = useState<string>('');
+  const [bgDate, setBgDate] = useState<string>('');
+  const [bgPdfUrl, setBgPdfUrl] = useState<string | null>(null);
+
+  // Aditamento Analysis State
+  const [aditamentoResults, setAditamentoResults] = useState<IdentificationResult[]>([]);
+  const [aditamentoFullText, setAditamentoFullText] = useState<{page: number, text: string}[]>([]);
+  const [aditamentoFileName, setAditamentoFileName] = useState<string | null>(null);
+  const [aditamentoUploadedAt, setAditamentoUploadedAt] = useState<string | null>(null);
+  const [aditamentoNumber, setAditamentoNumber] = useState<string>('');
+  const [aditamentoDate, setAditamentoDate] = useState<string>('');
+  const [aditamentoPdfUrl, setAditamentoPdfUrl] = useState<string | null>(null);
+
+  const [userSpecificResults, setUserSpecificResults] = useState<any[]>([]);
+  const [uploadDocType, setUploadDocType] = useState<'BG' | 'ADITAMENTO'>('BG');
+  const [uploadBgNumber, setUploadBgNumber] = useState<string>('');
+  const [uploadBgDate, setUploadBgDate] = useState<string>(new Date().toISOString().split('T')[0]);
 
   // Form States
   const [newOfficer, setNewOfficer] = useState({ name: '', registration: '', unit: '', rank: '', role: 'user' as 'admin' | 'user' });
@@ -198,22 +221,38 @@ export default function App() {
       setSearchTerms(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as SearchTerm)));
     }, (err) => console.error('Error fetching terms:', err));
 
-    const unsubBG = onSnapshot(doc(db, 'bg_analysis', 'latest'), (docSnap) => {
+    const unsubBG = onSnapshot(doc(db, 'bg_analysis', 'latest_bg'), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
-        setResults(data.results || []);
-        setFullText(data.fullText || []);
-        setFileName(data.fileName || null);
-        setPdfUrl(data.pdfUrl || null);
-        setUploadedAt(data.uploadedAt || null);
+        setBgResults(data.results || []);
+        setBgFullText(data.fullText || []);
+        setBgFileName(data.fileName || null);
+        setBgPdfUrl(data.pdfUrl || null);
+        setBgUploadedAt(data.uploadedAt || null);
         setBgNumber(data.bgNumber || '');
         setBgDate(data.bgDate || '');
         console.log('Latest BG analysis loaded from Firestore');
       }
     }, (err) => {
       console.error('Error fetching latest BG:', err);
-      toast.error('Erro ao buscar o último BG. Verifique as permissões.');
-      handleFirestoreError(err, OperationType.GET, 'bg_analysis/latest');
+      handleFirestoreError(err, OperationType.GET, 'bg_analysis/latest_bg');
+    });
+
+    const unsubAditamento = onSnapshot(doc(db, 'bg_analysis', 'latest_aditamento'), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setAditamentoResults(data.results || []);
+        setAditamentoFullText(data.fullText || []);
+        setAditamentoFileName(data.fileName || null);
+        setAditamentoPdfUrl(data.pdfUrl || null);
+        setAditamentoUploadedAt(data.uploadedAt || null);
+        setAditamentoNumber(data.bgNumber || '');
+        setAditamentoDate(data.bgDate || '');
+        console.log('Latest Aditamento analysis loaded from Firestore');
+      }
+    }, (err) => {
+      console.error('Error fetching latest Aditamento:', err);
+      handleFirestoreError(err, OperationType.GET, 'bg_analysis/latest_aditamento');
     });
 
     return () => {
@@ -221,6 +260,7 @@ export default function App() {
       unsubUnits();
       unsubTerms();
       unsubBG();
+      unsubAditamento();
     };
   }, []);
 
@@ -365,6 +405,11 @@ export default function App() {
         setLoggedInOfficer(officerData);
         localStorage.setItem('officer_session', JSON.stringify(officerData));
         toast.success(`Bem-vindo, ${officerData.name}!`);
+
+        // Check if email or phone is missing for common users
+        if (officerData.role !== 'admin' && (!officerData.email || !officerData.phone)) {
+          setShowProfileUpdate(true);
+        }
       } else {
         toast.error('Senha incorreta.');
       }
@@ -393,6 +438,28 @@ export default function App() {
     } catch (err) {
       console.error(err);
       toast.error('Erro ao alterar senha.');
+    }
+  };
+
+  const handleProfileUpdate = async (email: string, phone: string) => {
+    if (!loggedInOfficer) return;
+    
+    try {
+      const officerRef = doc(db, 'officers', loggedInOfficer.id);
+      await setDoc(officerRef, { 
+        ...loggedInOfficer, 
+        email, 
+        phone 
+      }, { merge: true });
+      
+      const updatedOfficer = { ...loggedInOfficer, email, phone };
+      setLoggedInOfficer(updatedOfficer);
+      localStorage.setItem('officer_session', JSON.stringify(updatedOfficer));
+      setShowProfileUpdate(false);
+      toast.success('Dados cadastrais atualizados com sucesso!');
+    } catch (err) {
+      console.error(err);
+      toast.error('Erro ao atualizar dados cadastrais.');
     }
   };
 
@@ -566,9 +633,6 @@ export default function App() {
     }
   };
 
-  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
-  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
-
   // Helper for flexible matching
   const normalizeText = (text: string) => {
     if (!text) return '';
@@ -576,6 +640,8 @@ export default function App() {
       .toLowerCase()
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "") // Remove accents
+      .replace(/[º°ª]/g, " ")          // Replace ordinal/degree/feminine ordinal with space
+      .replace(/(\d+)\s*[o\.]\s*/g, "$1 ") // Replace "5 o" or "5." with "5 "
       .replace(/\s+/g, ' ')           // Simplify whitespace
       .trim();
   };
@@ -586,6 +652,7 @@ export default function App() {
       .toLowerCase()
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "") // Remove accents
+      .replace(/[º°ª\.]/g, "")         // Remove ordinal/degree/dots
       .replace(/\s+/g, '')            // Remove ALL whitespace
       .trim();
   };
@@ -601,21 +668,20 @@ export default function App() {
   };
 
   const getUnitVariations = (unit: string) => {
-    const normalized = unit.toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const normalized = unit.toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[º°ª]/g, " ");
     const numMatch = normalized.match(/(\d+)/);
-    if (!numMatch) return [unit.toLowerCase()];
+    if (!numMatch) return [unit.toLowerCase(), normalizeText(unit)];
     
     const n = numMatch[1];
     const variations = new Set([
       unit.toLowerCase(),
+      normalizeText(unit),
       `${n}bpm`,
-      `${n}°bpm`,
-      `${n}° bpm`,
       `${n} bpm`,
-      `${n}° batalhao`,
-      `${n}° batalhão`,
       `${n} batalhao`,
-      `${n} batalhão`
+      `${n} batalhão`,
+      `${n}bt`,
+      `${n} bt`
     ]);
     return Array.from(variations);
   };
@@ -629,9 +695,11 @@ export default function App() {
     }
 
     const personalResults: any[] = [];
+    const combinedResults = [...bgResults, ...aditamentoResults];
+    const combinedFullText = [...bgFullText, ...aditamentoFullText];
     
     // 1. Check global results for matches with current user (Cross-referencing)
-    results.forEach(res => {
+    combinedResults.forEach(res => {
       if (res.type === 'officer' && res.metadata) {
         const isMatch = res.metadata.registration === loggedInOfficer.registration || 
                         res.metadata.name === loggedInOfficer.name;
@@ -651,14 +719,14 @@ export default function App() {
     });
 
     // 2. Search fullText for keywords (to catch things not in global results or newly added)
-    if (fullText.length) {
+    if (combinedFullText.length) {
       const keywords = loggedInOfficer.keywords || [];
       const identifiers = [
         loggedInOfficer.registration,
         loggedInOfficer.name
       ].filter(Boolean);
 
-      fullText.forEach(pageData => {
+      combinedFullText.forEach(pageData => {
         const text = pageData.text;
         const textNormalized = normalizeText(text);
         const textFuzzy = normalizeTextFuzzy(text);
@@ -723,32 +791,53 @@ export default function App() {
     );
 
     setUserSpecificResults(uniqueResults);
-  }, [results, fullText, loggedInOfficer?.keywords, loggedInOfficer?.registration, loggedInOfficer?.name, loggedInOfficer?.unit]);
+  }, [bgResults, aditamentoResults, bgFullText, aditamentoFullText, loggedInOfficer?.keywords, loggedInOfficer?.registration, loggedInOfficer?.name, loggedInOfficer?.unit]);
 
   const processPDF = async (data: ArrayBuffer, name: string, append = false) => {
     console.log('Starting PDF processing for:', name);
     
     setIsProcessing(true);
     setProcessingMessage('Iniciando processamento...');
-    setFileName(prev => append && prev ? `${prev} + ${name}` : name);
+    
+    const currentDocType = uploadDocType;
+    const currentResults = currentDocType === 'BG' ? bgResults : aditamentoResults;
+    const currentFullText = currentDocType === 'BG' ? bgFullText : aditamentoFullText;
+    const currentFileName = currentDocType === 'BG' ? bgFileName : aditamentoFileName;
+    const currentPdfUrl = currentDocType === 'BG' ? bgPdfUrl : aditamentoPdfUrl;
+
     if (!append) {
-      setResults([]);
-      setFullText([]);
+      if (currentDocType === 'BG') {
+        setBgResults([]);
+        setBgFullText([]);
+        setBgFileName(name);
+      } else {
+        setAditamentoResults([]);
+        setAditamentoFullText([]);
+        setAditamentoFileName(name);
+      }
+    } else {
+      if (currentDocType === 'BG') {
+        setBgFileName(prev => prev ? `${prev} + ${name}` : name);
+      } else {
+        setAditamentoFileName(prev => prev ? `${prev} + ${name}` : name);
+      }
     }
+
     setProgress(0);
 
     try {
+      console.log(`Data size: ${data.byteLength} bytes`);
       const blob = new Blob([data], { type: 'application/pdf' });
+      console.log(`Blob created: ${blob.size} bytes, type: ${blob.type}`);
       setPdfBlob(blob);
       
       // Delete previous file if it exists and we're not appending
-      if (pdfUrl && !append) {
+      if (currentPdfUrl && !append) {
         setProcessingMessage('Limpando arquivos antigos...');
         try {
-          // Only try to delete if the URL belongs to our storage bucket
-          const config = await import('../firebase-applet-config.json');
-          if (pdfUrl.includes(config.storageBucket)) {
-            const oldFileRef = ref(storage, pdfUrl);
+          // Only try to delete if the URL looks like it belongs to our storage
+          if (currentPdfUrl.includes('firebasestorage.googleapis.com')) {
+            const oldFileRef = ref(storage, currentPdfUrl);
             await deleteObject(oldFileRef);
             console.log('Previous PDF deleted from Storage');
           }
@@ -759,38 +848,75 @@ export default function App() {
 
       // Upload to Firebase Storage
       console.log('Uploading PDF to Storage...');
-      setProcessingMessage('Enviando arquivo para o servidor...');
+      setProcessingMessage('Iniciando envio...');
       setProgress(10); 
       
       let downloadUrl = '';
-      const sanitizedName = name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const sanitizedName = `${Date.now()}_${name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
       
       try {
         const storageRef = ref(storage, `bg_files/${sanitizedName}`);
+        console.log('Storage reference created:', storageRef.fullPath);
         
         // Use uploadBytesResumable for better progress tracking and timeout handling
         const uploadTask = uploadBytesResumable(storageRef, blob);
         
         const uploadPromise = new Promise<string>((resolve, reject) => {
+          let lastBytes = 0;
+          let lastUpdate = Date.now();
+          
           const timeout = setTimeout(() => {
+            console.error('Upload timeout reached');
             uploadTask.cancel();
             reject(new Error('timeout'));
-          }, 30000); // 30 seconds timeout
+          }, 300000); // 5 minutes timeout
+
+          const stuckCheck = setInterval(() => {
+            if (Date.now() - lastUpdate > 45000 && lastBytes === 0) {
+              console.warn('Upload seems stuck at 0%');
+              clearInterval(stuckCheck);
+              uploadTask.cancel();
+              reject(new Error('stuck'));
+            }
+          }, 5000);
 
           uploadTask.on('state_changed', 
             (snapshot) => {
-              const uploadProgress = (snapshot.bytesTransferred / snapshot.totalBytes) * 30; // 0 to 30%
-              setProgress(Math.round(10 + uploadProgress));
-              setProcessingMessage(`Enviando: ${Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100)}%`);
+              const total = snapshot.totalBytes || 1;
+              const transferred = snapshot.bytesTransferred;
+              
+              if (transferred > lastBytes) {
+                lastBytes = transferred;
+                lastUpdate = Date.now();
+              }
+              
+              const uploadProgress = (transferred / total) * 30; // 0 to 30%
+              const currentProgress = Math.round(10 + uploadProgress);
+              const percent = Math.round((transferred / total) * 100);
+              
+              setProgress(currentProgress);
+              setProcessingMessage(`Enviando: ${percent}%`);
+              console.log(`Upload progress: ${percent}% (${transferred}/${total} bytes) - State: ${snapshot.state}`);
             }, 
-            (error) => {
+            (error: any) => {
               clearTimeout(timeout);
+              clearInterval(stuckCheck);
+              if (error.code !== 'storage/canceled') {
+                console.error('Upload task error:', error);
+              }
               reject(error);
             }, 
             async () => {
+              console.log('Upload task completed successfully');
               clearTimeout(timeout);
-              const url = await getDownloadURL(uploadTask.snapshot.ref);
-              resolve(url);
+              clearInterval(stuckCheck);
+              try {
+                const url = await getDownloadURL(uploadTask.snapshot.ref);
+                resolve(url);
+              } catch (urlErr) {
+                console.error('Error getting download URL:', urlErr);
+                reject(urlErr);
+              }
             }
           );
         });
@@ -799,16 +925,20 @@ export default function App() {
         console.log('PDF uploaded successfully');
         setPdfUrl(downloadUrl);
       } catch (storageErr: any) {
-        console.error('Storage Upload Error:', storageErr);
+        if (storageErr.code !== 'storage/canceled' && storageErr.message !== 'stuck' && storageErr.message !== 'timeout') {
+          console.error('Storage Upload Error:', storageErr);
+        }
         // Fallback to local URL for immediate analysis
         downloadUrl = URL.createObjectURL(blob);
         setPdfUrl(downloadUrl);
         
         if (storageErr.message === 'timeout') {
           toast.warning('O upload demorou muito. O arquivo será analisado localmente, mas não ficará salvo permanentemente.');
+        } else if (storageErr.message === 'stuck') {
+          toast.warning('O envio ao servidor está lento. Prosseguindo com análise local para agilizar...');
         } else if (storageErr.code === 'storage/unauthorized') {
           toast.error('Sem permissão para salvar no Storage. Verifique as regras de segurança no Console Firebase.');
-        } else {
+        } else if (storageErr.code !== 'storage/canceled') {
           toast.warning('Falha ao salvar arquivo no servidor. Analisando cópia local...');
         }
       }
@@ -875,6 +1005,65 @@ export default function App() {
                 page: i,
                 metadata: off
               });
+            }
+          });
+
+          // Search for Mandatory Terms (5º BPM) - Always included
+          // 1. Regex-based search (most flexible)
+          const battalionRegex = /(5|quinto|quinta)\s*[º°ªo\.]?\s*(bpm|batalhao|batalhão|bt)/gi;
+          let bMatch;
+          while ((bMatch = battalionRegex.exec(text)) !== null) {
+            console.log('Battalion match found:', bMatch[0]);
+            const index = bMatch.index;
+            const matchText = bMatch[0];
+            const start = Math.max(0, index - 60);
+            const end = Math.min(text.length, index + matchText.length + 80);
+            const context = text.substring(start, end).replace(/\s+/g, ' ').trim();
+
+            if (!found.some(f => f.type === 'unit' && f.match === '5º BPM' && f.page === i)) {
+              found.push({
+                type: 'unit',
+                match: '5º BPM',
+                context: context ? `...${context}...` : 'Identificado no texto.',
+                page: i,
+                metadata: { name: '5º BPM', acronym: '5BPM' }
+              });
+            }
+          }
+
+          // 2. Variation-based search (fallback)
+          const mandatoryUnitTerms = [
+            { name: '5º BPM', acronym: '5BPM' },
+            { name: '5º BATALHÃO', acronym: '5º BATALHÃO' },
+            { name: '5º BATALHAO', acronym: '5º BATALHAO' }
+          ];
+
+          mandatoryUnitTerms.forEach(unit => {
+            const unitVariations = getUnitVariations(unit.name).map(v => normalizeText(v));
+            const unitFuzzy = normalizeTextFuzzy(unit.name);
+            const acronymNormalized = normalizeText(unit.acronym);
+
+            const unitMatch = unitVariations.find(v => textNormalized.includes(v)) || 
+                             (unitFuzzy.length > 4 && textFuzzy.includes(unitFuzzy) ? unitFuzzy : undefined);
+            const acronymMatch = acronymNormalized && textNormalized.includes(acronymNormalized);
+
+            if (unitMatch || acronymMatch) {
+              const matchStr = (typeof unitMatch === 'string' ? unitMatch : acronymNormalized);
+              const index = textNormalized.indexOf(matchStr);
+              const start = Math.max(0, index - 60);
+              const end = Math.min(text.length, index + matchStr.length + 80);
+              const context = text.substring(start, end).replace(/\s+/g, ' ').trim();
+              
+              // Only add if not already found to avoid duplicates
+              if (!found.some(f => f.type === 'unit' && f.match === '5º BPM' && f.page === i)) {
+                found.push({
+                  type: 'unit',
+                  match: '5º BPM',
+                  context: context ? `...${context}...` : 'Identificado no texto.',
+                  page: i,
+                  metadata: { name: '5º BPM', acronym: '5BPM' }
+                });
+              }
             }
           });
 
@@ -966,20 +1155,31 @@ export default function App() {
       }
 
       if (append) {
-        const newResults = [...results, ...found];
-        const newFullText = [...fullText, ...pagesText];
-        setResults(newResults);
-        setFullText(newFullText);
+        const newResults = [...currentResults, ...found];
+        const newFullText = [...currentFullText, ...pagesText];
+        
+        if (currentDocType === 'BG') {
+          setBgResults(newResults);
+          setBgFullText(newFullText);
+          setBgPdfUrl(downloadUrl);
+        } else {
+          setAditamentoResults(newResults);
+          setAditamentoFullText(newFullText);
+          setAditamentoPdfUrl(downloadUrl);
+        }
+
         // If admin, save to Firestore
         if (user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') {
           try {
-            await setDoc(doc(db, 'bg_analysis', 'latest'), {
-              fileName: fileName ? `${fileName} + ${name}` : name,
+            const docId = currentDocType === 'BG' ? 'latest_bg' : 'latest_aditamento';
+            await setDoc(doc(db, 'bg_analysis', docId), {
+              fileName: currentFileName ? `${currentFileName} + ${name}` : name,
               results: newResults,
               fullText: newFullText,
               pdfUrl: downloadUrl,
               uploadedAt: new Date().toISOString(),
               uploadedBy: user?.displayName || loggedInOfficer?.name || 'Administrador',
+              docType: currentDocType,
               bgNumber: uploadBgNumber,
               bgDate: uploadBgDate
             });
@@ -990,18 +1190,28 @@ export default function App() {
           }
         }
       } else {
-        setResults(found);
-        setFullText(pagesText);
+        if (currentDocType === 'BG') {
+          setBgResults(found);
+          setBgFullText(pagesText);
+          setBgPdfUrl(downloadUrl);
+        } else {
+          setAditamentoResults(found);
+          setAditamentoFullText(pagesText);
+          setAditamentoPdfUrl(downloadUrl);
+        }
+
         // If admin, save to Firestore
         if (user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') {
           try {
-            await setDoc(doc(db, 'bg_analysis', 'latest'), {
+            const docId = currentDocType === 'BG' ? 'latest_bg' : 'latest_aditamento';
+            await setDoc(doc(db, 'bg_analysis', docId), {
               fileName: name,
               results: found,
               fullText: pagesText,
               pdfUrl: downloadUrl,
               uploadedAt: new Date().toISOString(),
               uploadedBy: user?.displayName || loggedInOfficer?.name || 'Administrador',
+              docType: currentDocType,
               bgNumber: uploadBgNumber,
               bgDate: uploadBgDate
             });
@@ -1074,8 +1284,42 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#f5f5f0] font-sans text-[#1a1a1a]">
+    <div className="min-h-screen bg-[#f5f5f0] font-sans text-[#1a1a1a] flex flex-col lg:flex-row">
       <Toaster position="top-right" />
+      
+      {/* Mobile Header */}
+      <header className="lg:hidden bg-white border-b border-black/5 p-4 flex items-center justify-between sticky top-0 z-40">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-[#5A5A40]/5 rounded-xl flex items-center justify-center">
+            <img 
+              src="https://lh3.googleusercontent.com/d/1ZeVU9ZIkPN3wqDDLTMbTM3zuH1KnUMbl" 
+              alt="Logo" 
+              className="w-8 h-8 object-contain"
+              referrerPolicy="no-referrer"
+            />
+          </div>
+          <span className="font-serif font-bold text-lg">5º BPM</span>
+        </div>
+        <button 
+          onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+          className="p-2 hover:bg-[#f5f5f0] rounded-xl transition-colors"
+        >
+          {isSidebarOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+        </button>
+      </header>
+
+      {/* Sidebar Overlay */}
+      <AnimatePresence>
+        {isSidebarOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setIsSidebarOpen(false)}
+            className="fixed inset-0 bg-black/40 backdrop-blur-sm z-40 lg:hidden"
+          />
+        )}
+      </AnimatePresence>
       
       {showChangePassword && (
         <ChangePasswordModal 
@@ -1083,9 +1327,21 @@ export default function App() {
           onCancel={() => setShowChangePassword(false)}
         />
       )}
+
+      {showProfileUpdate && (
+        <ProfileUpdateModal 
+          initialEmail={loggedInOfficer?.email}
+          initialPhone={loggedInOfficer?.phone}
+          onSave={handleProfileUpdate}
+          onCancel={() => setShowProfileUpdate(false)}
+        />
+      )}
       
       {/* Sidebar */}
-      <aside className="fixed left-0 top-0 bottom-0 w-72 bg-white border-r border-black/5 p-8 flex flex-col">
+      <aside className={cn(
+        "fixed inset-y-0 left-0 z-50 w-72 bg-white border-r border-black/5 p-8 flex flex-col transform transition-transform duration-300 lg:translate-x-0 lg:static lg:inset-0",
+        isSidebarOpen ? "translate-x-0" : "-translate-x-full"
+      )}>
         <div className="flex flex-col items-center mb-12">
           <div className="w-24 h-24 mb-4 relative">
             <div className="absolute inset-0 bg-[#5A5A40]/5 rounded-3xl -rotate-6 transition-transform group-hover:rotate-0"></div>
@@ -1107,24 +1363,40 @@ export default function App() {
             <FileText className="text-white w-6 h-6" />
           </div>
           <div className="min-w-0">
-            <span className="text-lg font-serif font-light block truncate">SIA-BG</span>
-            {bgNumber ? (
-              <div className="flex items-center gap-1 text-[10px] font-bold text-green-600 uppercase tracking-wider">
-                <ShieldCheck className="w-3 h-3" />
-                Atualizado: BG {bgNumber} de {formatDate(bgDate)}
-              </div>
-            ) : (
-              <div className="flex items-center gap-1 text-[10px] font-bold text-[#5A5A40]/40 uppercase tracking-wider">
-                <FileText className="w-3 h-3" />
-                Aguardando BG
-              </div>
-            )}
+            <span className="text-lg font-serif font-light block truncate">SIA-PMRN</span>
+            <div className="space-y-1 mt-1">
+              {bgNumber ? (
+                <div className="flex items-center gap-1 text-[9px] font-bold text-green-600 uppercase tracking-wider">
+                  <ShieldCheck className="w-2.5 h-2.5" />
+                  BG: {bgNumber} - {formatDate(bgDate)}
+                </div>
+              ) : (
+                <div className="flex items-center gap-1 text-[9px] font-bold text-[#5A5A40]/40 uppercase tracking-wider">
+                  <FileText className="w-2.5 h-2.5" />
+                  BG: Pendente
+                </div>
+              )}
+              {aditamentoNumber ? (
+                <div className="flex items-center gap-1 text-[9px] font-bold text-blue-600 uppercase tracking-wider">
+                  <ShieldCheck className="w-2.5 h-2.5" />
+                  ADIT: {aditamentoNumber} - {formatDate(aditamentoDate)}
+                </div>
+              ) : (
+                <div className="flex items-center gap-1 text-[9px] font-bold text-[#5A5A40]/40 uppercase tracking-wider">
+                  <FileText className="w-2.5 h-2.5" />
+                  ADIT: Pendente
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
         <nav className="flex-1 space-y-2">
           <button
-            onClick={() => setActiveTab('dashboard')}
+            onClick={() => {
+              setActiveTab('dashboard');
+              setIsSidebarOpen(false);
+            }}
             className={cn(
               "w-full flex items-center gap-4 px-6 py-4 rounded-2xl transition-all duration-200",
               activeTab === 'dashboard' 
@@ -1133,12 +1405,15 @@ export default function App() {
             )}
           >
             <Search className="w-5 h-5" />
-            <span className="font-medium">Verificação BG</span>
+            <span className="font-medium">Painel de Verificação</span>
           </button>
 
           {loggedInOfficer && (
             <button
-              onClick={() => setActiveTab('keywords')}
+              onClick={() => {
+                setActiveTab('keywords');
+                setIsSidebarOpen(false);
+              }}
               className={cn(
                 "w-full flex items-center gap-4 px-6 py-4 rounded-2xl transition-all duration-200",
                 activeTab === 'keywords' 
@@ -1154,7 +1429,10 @@ export default function App() {
           {(user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') && (
             <>
               <button
-                onClick={() => setActiveTab('database')}
+                onClick={() => {
+                  setActiveTab('database');
+                  setIsSidebarOpen(false);
+                }}
                 className={cn(
                   "w-full flex items-center gap-4 px-6 py-4 rounded-2xl transition-all duration-200",
                   activeTab === 'database' 
@@ -1166,7 +1444,10 @@ export default function App() {
                 <span className="font-medium">Banco de Dados</span>
               </button>
               <button
-                onClick={() => setActiveTab('settings')}
+                onClick={() => {
+                  setActiveTab('settings');
+                  setIsSidebarOpen(false);
+                }}
                 className={cn(
                   "w-full flex items-center gap-4 px-6 py-4 rounded-2xl transition-all duration-200",
                   activeTab === 'settings' 
@@ -1184,6 +1465,15 @@ export default function App() {
         <div className="pt-8 border-t border-black/5">
           {user || loggedInOfficer ? (
             <>
+              {loggedInOfficer && (
+                <button 
+                  onClick={() => setShowProfileUpdate(true)}
+                  className="w-full flex items-center gap-3 mb-2 px-6 py-3 text-[#5A5A40] hover:bg-[#f5f5f0] rounded-xl transition-colors font-medium text-sm"
+                >
+                  <UserIcon className="w-4 h-4" />
+                  Meus Dados
+                </button>
+              )}
               <button 
                 onClick={() => {
                   setActiveTab('settings');
@@ -1226,37 +1516,33 @@ export default function App() {
       </aside>
 
       {/* Main Content */}
-      <main className="ml-72 p-12 max-w-7xl mx-auto">
-        <div className="flex justify-end mb-8 items-center gap-6">
-          {fileName && (
-            <button 
-              onClick={() => {
-                if (pdfBlob) {
-                  const url = URL.createObjectURL(pdfBlob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = fileName.endsWith('.pdf') ? fileName : `${fileName}.pdf`;
-                  document.body.appendChild(a);
-                  a.click();
-                  document.body.removeChild(a);
-                  URL.revokeObjectURL(url);
-                } else if (pdfUrl) {
-                  window.open(pdfUrl, '_blank');
-                } else {
-                  toast.info('O arquivo original não está disponível no momento.');
-                }
-              }}
-              className="flex items-center gap-2 px-6 py-2 bg-white border border-[#5A5A40]/10 rounded-full text-[#5A5A40] hover:bg-[#f5f5f0] transition-all shadow-sm group"
-            >
-              <FileText className="w-4 h-4 group-hover:scale-110 transition-transform" />
-              <span className="font-bold text-xs uppercase tracking-widest">BG DO DIA</span>
-            </button>
-          )}
-          <div className="flex items-center gap-3 bg-white px-6 py-2 rounded-full border border-black/5 shadow-sm">
-            <div className="w-8 h-8 rounded-full bg-[#5A5A40]/10 flex items-center justify-center">
-              <UserIcon className="w-4 h-4 text-[#5A5A40]" />
+      <main className="flex-1 p-4 md:p-8 lg:p-12 max-w-7xl mx-auto w-full overflow-x-hidden">
+        <div className="flex flex-col md:flex-row justify-between mb-8 items-start md:items-center gap-4 md:gap-6">
+          <div className="flex flex-wrap gap-3">
+            {bgPdfUrl && (
+              <button 
+                onClick={() => window.open(bgPdfUrl, '_blank')}
+                className="flex items-center gap-2 px-4 py-2 bg-white border border-[#5A5A40]/10 rounded-full text-[#5A5A40] hover:bg-[#f5f5f0] transition-all shadow-sm group text-xs"
+              >
+                <FileText className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
+                <span className="font-bold uppercase tracking-widest">BG DO DIA</span>
+              </button>
+            )}
+            {aditamentoPdfUrl && (
+              <button 
+                onClick={() => window.open(aditamentoPdfUrl, '_blank')}
+                className="flex items-center gap-2 px-4 py-2 bg-white border border-[#5A5A40]/10 rounded-full text-[#5A5A40] hover:bg-[#f5f5f0] transition-all shadow-sm group text-xs"
+              >
+                <FileText className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
+                <span className="font-bold uppercase tracking-widest">ADITAMENTO</span>
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-3 bg-white px-4 py-2 rounded-full border border-black/5 shadow-sm">
+            <div className="w-7 h-7 rounded-full bg-[#5A5A40]/10 flex items-center justify-center">
+              <UserIcon className="w-3.5 h-3.5 text-[#5A5A40]" />
             </div>
-            <span className="text-sm font-medium text-[#5A5A40]/60">
+            <span className="text-xs font-medium text-[#5A5A40]/60">
               Olá, <span className="text-[#5A5A40] font-bold">{user ? user.displayName : loggedInOfficer?.name}</span>
             </span>
           </div>
@@ -1271,101 +1557,46 @@ export default function App() {
               exit={{ opacity: 0, x: -20 }}
               className="space-y-12"
             >
-              <header className="flex items-end justify-between">
+              <header className="flex flex-col md:flex-row md:items-end justify-between gap-8">
                 <div>
-                  <h2 className="text-5xl font-serif font-light mb-4">Verificação BG</h2>
-                  <div className="flex flex-col gap-1">
-                    <p className="text-[#5A5A40] italic font-serif">
-                      {(user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') 
-                        ? "Carregue o Boletim Geral do dia para análise e compartilhamento." 
-                        : "Resultados da análise do último Boletim Geral carregado."}
-                    </p>
-                    {bgNumber && bgDate && (
-                      <div className="flex items-center gap-2 mt-2 bg-white/50 w-fit px-4 py-2 rounded-2xl border border-[#5A5A40]/10">
-                        <ShieldCheck className="w-4 h-4 text-green-600" />
-                        <span className="text-sm font-serif text-[#5A5A40]">
-                          Último BG disponível: <span className="font-bold">Nº {bgNumber}</span>, de <span className="font-bold">{formatDate(bgDate)}</span>
-                        </span>
-                      </div>
-                    )}
-                  </div>
+                  <h2 className="text-3xl md:text-5xl font-serif font-light mb-4">Painel de Verificação</h2>
+                  <p className="text-[#5A5A40] italic font-serif max-w-2xl text-sm md:text-base">
+                    Acompanhe aqui as identificações automáticas realizadas nos últimos documentos oficiais da PMRN.
+                  </p>
                 </div>
               </header>
 
-              {/* Global Analysis Summary */}
-              {fileName && (
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <div className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm">
-                    <div className="flex items-center gap-4 mb-4">
-                      <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center">
-                        <Users className="w-6 h-6" />
-                      </div>
-                      <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">Policiais</span>
-                    </div>
-                    <p className="text-4xl font-serif">{results.filter(r => r.type === 'officer').length}</p>
-                    <p className="text-sm text-[#5A5A40]/60 mt-2">Identificados no banco de dados</p>
-                  </div>
-                  <div className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm">
-                    <div className="flex items-center gap-4 mb-4">
-                      <div className="w-12 h-12 bg-green-50 text-green-600 rounded-2xl flex items-center justify-center">
-                        <Building2 className="w-6 h-6" />
-                      </div>
-                      <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">5º BPM</span>
-                    </div>
-                    <p className="text-4xl font-serif">
-                      {results.filter(r => 
-                        r.type === 'unit' && 
-                        (normalizeText(r.match).includes('5 bpm') || normalizeText(r.match).includes('5 batalhao'))
-                      ).length}
-                    </p>
-                    <p className="text-sm text-[#5A5A40]/60 mt-2">Menções ao 5º Batalhão</p>
-                  </div>
-                  <div className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm">
-                    <div className="flex items-center gap-4 mb-4">
-                      <div className="w-12 h-12 bg-orange-50 text-orange-600 rounded-2xl flex items-center justify-center">
-                        <Search className="w-6 h-6" />
-                      </div>
-                      <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">Termos</span>
-                    </div>
-                    <p className="text-4xl font-serif">
-                      {userSpecificResults.filter(r => r.type === 'personal').length}
-                    </p>
-                    <p className="text-sm text-[#5A5A40]/60 mt-2">Suas palavras-chave mencionadas</p>
-                  </div>
-                </div>
-              )}
-
-              {/* User Highlight Summary */}
-              {loggedInOfficer && fileName && (
+              {/* User Highlight Summary - Combined */}
+              {loggedInOfficer && (bgFileName || aditamentoFileName) && (
                 <motion.div 
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   className={cn(
-                    "rounded-[40px] p-10 border-2 transition-all duration-500",
+                    "rounded-[32px] md:rounded-[40px] p-6 md:p-10 border-2 transition-all duration-500",
                     userSpecificResults.length > 0 
                       ? "bg-red-50 border-red-200 shadow-xl shadow-red-900/5" 
                       : "bg-green-50 border-green-200 shadow-xl shadow-green-900/5"
                   )}
                 >
-                  <div className="flex items-center justify-between mb-8">
-                    <div className="flex items-center gap-6">
+                  <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6 mb-8">
+                    <div className="flex items-center gap-4 md:gap-6">
                       <div className={cn(
-                        "w-20 h-20 rounded-3xl flex items-center justify-center animate-pulse",
+                        "w-14 h-14 md:w-20 md:h-20 rounded-2xl md:rounded-3xl flex items-center justify-center animate-pulse shrink-0",
                         userSpecificResults.length > 0 ? "bg-red-500 text-white" : "bg-green-500 text-white"
                       )}>
-                        {userSpecificResults.length > 0 ? <AlertCircle className="w-10 h-10" /> : <CheckCircle2 className="w-10 h-10" />}
+                        {userSpecificResults.length > 0 ? <AlertCircle className="w-6 h-6 md:w-10 md:h-10" /> : <CheckCircle2 className="w-6 h-6 md:w-10 md:h-10" />}
                       </div>
                       <div>
-                        <h3 className="text-4xl font-serif font-bold mb-2">
-                          {userSpecificResults.length > 0 ? 'Atenção: Menções Encontradas!' : 'Nada Consta no Boletim'}
+                        <h3 className="text-2xl md:text-4xl font-serif font-bold mb-1 md:mb-2">
+                          {userSpecificResults.length > 0 ? 'Atenção: Menções Encontradas!' : 'Nada Consta nos Documentos'}
                         </h3>
                         <p className={cn(
-                          "text-lg font-serif italic",
+                          "text-sm md:text-lg font-serif italic",
                           userSpecificResults.length > 0 ? "text-red-700" : "text-green-700"
                         )}>
                           {userSpecificResults.length > 0 
-                            ? 'Confira abaixo os detalhes das ocorrências identificadas.' 
-                            : 'Seu nome, matrícula e palavras-chave não foram encontrados neste boletim.'}
+                            ? 'Confira abaixo as ocorrências identificadas tanto no Boletim Geral quanto no Aditamento.' 
+                            : 'Seu nome, matrícula e palavras-chave não foram encontrados nos documentos atuais.'}
                         </p>
                       </div>
                     </div>
@@ -1388,12 +1619,255 @@ export default function App() {
                 </motion.div>
               )}
 
+              {/* BG Results Section */}
+              {bgFileName && (
+                <div className="space-y-8 pt-8 border-t border-black/5">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 md:w-12 md:h-12 bg-green-50 text-green-600 rounded-xl md:rounded-2xl flex items-center justify-center">
+                        <FileText className="w-5 h-5 md:w-6 md:h-6" />
+                      </div>
+                      <h3 className="text-2xl md:text-3xl font-serif font-light">Boletim Geral (BG)</h3>
+                    </div>
+                    <div className="flex items-center gap-2 bg-white/50 px-4 py-2 rounded-xl md:rounded-2xl border border-[#5A5A40]/10 w-fit">
+                      <ShieldCheck className="w-4 h-4 text-green-600" />
+                      <span className="text-xs md:text-sm font-serif text-[#5A5A40]">
+                        Nº {bgNumber}, de {formatDate(bgDate)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm">
+                      <div className="flex items-center gap-4 mb-4">
+                        <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center">
+                          <Users className="w-6 h-6" />
+                        </div>
+                        <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">Policiais</span>
+                      </div>
+                      <p className="text-4xl font-serif">{bgResults.filter(r => r.type === 'officer').length}</p>
+                      <p className="text-sm text-[#5A5A40]/60 mt-2">No Boletim Geral</p>
+                    </div>
+                    <div className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm">
+                      <div className="flex items-center gap-4 mb-4">
+                        <div className="w-12 h-12 bg-green-50 text-green-600 rounded-2xl flex items-center justify-center">
+                          <Building2 className="w-6 h-6" />
+                        </div>
+                        <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">5º BPM</span>
+                      </div>
+                      <p className="text-4xl font-serif">
+                        {bgResults.filter(r => 
+                          r.type === 'unit' && 
+                          (normalizeText(r.match).includes('5 bpm') || 
+                           normalizeText(r.match).includes('5bpm') || 
+                           normalizeText(r.match).includes('5 batalhao') ||
+                           normalizeText(r.match).includes('5batalhao'))
+                        ).length}
+                      </p>
+                      <p className="text-sm text-[#5A5A40]/60 mt-2">No Boletim Geral</p>
+                    </div>
+                    <div className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm">
+                      <div className="flex items-center gap-4 mb-4">
+                        <div className="w-12 h-12 bg-orange-50 text-orange-600 rounded-2xl flex items-center justify-center">
+                          <Search className="w-6 h-6" />
+                        </div>
+                        <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">Termos</span>
+                      </div>
+                      <p className="text-4xl font-serif">
+                        {bgResults.filter(r => r.type === 'term').length}
+                      </p>
+                      <p className="text-sm text-[#5A5A40]/60 mt-2">No Boletim Geral</p>
+                    </div>
+                  </div>
+
+                  {/* Detailed BG Results */}
+                  <div className="bg-white rounded-[40px] border border-black/5 overflow-hidden shadow-sm">
+                    <div className="p-8 border-b border-black/5 bg-[#fcfcfc] flex items-center justify-between">
+                      <h4 className="text-xl font-serif font-bold">Detalhamento BG</h4>
+                      {bgPdfUrl && (
+                        <button 
+                          onClick={() => window.open(bgPdfUrl, '_blank')}
+                          className="text-xs font-bold uppercase tracking-widest text-[#5A5A40] hover:underline flex items-center gap-2"
+                        >
+                          <ExternalLink className="w-4 h-4" /> Ver PDF Original
+                        </button>
+                      )}
+                    </div>
+                    <div className="divide-y divide-black/5 max-h-[600px] overflow-y-auto custom-scrollbar">
+                      {bgResults.length > 0 ? (
+                        bgResults.map((res, i) => (
+                          <div key={i} className="p-8 hover:bg-[#fcfcfc] transition-colors group">
+                            <div className="flex items-start justify-between mb-4">
+                              <div className="flex items-center gap-4">
+                                <div className={cn(
+                                  "px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest",
+                                  res.type === 'officer' ? "bg-blue-50 text-blue-600" : 
+                                  res.type === 'unit' ? "bg-green-50 text-green-600" : "bg-orange-50 text-orange-600"
+                                )}>
+                                  {res.type === 'officer' ? 'Policial' : res.type === 'unit' ? 'Unidade' : 'Termo'}
+                                </div>
+                                <span className="text-xs font-bold text-[#5A5A40]/40 uppercase tracking-widest">Página {res.page}</span>
+                              </div>
+                            </div>
+                            <p className="text-xl font-serif font-bold mb-2 text-[#1a1a1a]">{res.match}</p>
+                            <p className="text-[#5A5A40]/70 italic font-serif leading-relaxed">"{res.context}"</p>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="p-16 text-center">
+                          <FileText className="w-12 h-12 text-[#5A5A40]/10 mx-auto mb-4" />
+                          <p className="text-[#5A5A40]/40 font-serif italic">Nenhuma identificação detalhada no BG.</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Aditamento Results Section */}
+              {aditamentoFileName && (
+                <div className="space-y-8 pt-8 border-t border-black/5">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 md:w-12 md:h-12 bg-blue-50 text-blue-600 rounded-xl md:rounded-2xl flex items-center justify-center">
+                        <FileText className="w-5 h-5 md:w-6 md:h-6" />
+                      </div>
+                      <h3 className="text-2xl md:text-3xl font-serif font-light">Aditamento</h3>
+                    </div>
+                    <div className="flex items-center gap-2 bg-white/50 px-4 py-2 rounded-xl md:rounded-2xl border border-[#5A5A40]/10 w-fit">
+                      <ShieldCheck className="w-4 h-4 text-blue-600" />
+                      <span className="text-xs md:text-sm font-serif text-[#5A5A40]">
+                        Nº {aditamentoNumber}, de {formatDate(aditamentoDate)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm">
+                      <div className="flex items-center gap-4 mb-4">
+                        <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center">
+                          <Users className="w-6 h-6" />
+                        </div>
+                        <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">Policiais</span>
+                      </div>
+                      <p className="text-4xl font-serif">{aditamentoResults.filter(r => r.type === 'officer').length}</p>
+                      <p className="text-sm text-[#5A5A40]/60 mt-2">No Aditamento</p>
+                    </div>
+                    <div className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm">
+                      <div className="flex items-center gap-4 mb-4">
+                        <div className="w-12 h-12 bg-green-50 text-green-600 rounded-2xl flex items-center justify-center">
+                          <Building2 className="w-6 h-6" />
+                        </div>
+                        <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">5º BPM</span>
+                      </div>
+                      <p className="text-4xl font-serif">
+                        {aditamentoResults.filter(r => 
+                          r.type === 'unit' && 
+                          (normalizeText(r.match).includes('5 bpm') || 
+                           normalizeText(r.match).includes('5bpm') || 
+                           normalizeText(r.match).includes('5 batalhao') ||
+                           normalizeText(r.match).includes('5batalhao'))
+                        ).length}
+                      </p>
+                      <p className="text-sm text-[#5A5A40]/60 mt-2">No Aditamento</p>
+                    </div>
+                    <div className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm">
+                      <div className="flex items-center gap-4 mb-4">
+                        <div className="w-12 h-12 bg-orange-50 text-orange-600 rounded-2xl flex items-center justify-center">
+                          <Search className="w-6 h-6" />
+                        </div>
+                        <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">Termos</span>
+                      </div>
+                      <p className="text-4xl font-serif">
+                        {aditamentoResults.filter(r => r.type === 'term').length}
+                      </p>
+                      <p className="text-sm text-[#5A5A40]/60 mt-2">No Aditamento</p>
+                    </div>
+                  </div>
+
+                  {/* Detailed Aditamento Results */}
+                  <div className="bg-white rounded-[40px] border border-black/5 overflow-hidden shadow-sm">
+                    <div className="p-8 border-b border-black/5 bg-[#fcfcfc] flex items-center justify-between">
+                      <h4 className="text-xl font-serif font-bold">Detalhamento Aditamento</h4>
+                      {aditamentoPdfUrl && (
+                        <button 
+                          onClick={() => window.open(aditamentoPdfUrl, '_blank')}
+                          className="text-xs font-bold uppercase tracking-widest text-[#5A5A40] hover:underline flex items-center gap-2"
+                        >
+                          <ExternalLink className="w-4 h-4" /> Ver PDF Original
+                        </button>
+                      )}
+                    </div>
+                    <div className="divide-y divide-black/5 max-h-[600px] overflow-y-auto custom-scrollbar">
+                      {aditamentoResults.length > 0 ? (
+                        aditamentoResults.map((res, i) => (
+                          <div key={i} className="p-8 hover:bg-[#fcfcfc] transition-colors group">
+                            <div className="flex items-start justify-between mb-4">
+                              <div className="flex items-center gap-4">
+                                <div className={cn(
+                                  "px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest",
+                                  res.type === 'officer' ? "bg-blue-50 text-blue-600" : 
+                                  res.type === 'unit' ? "bg-green-50 text-green-600" : "bg-orange-50 text-orange-600"
+                                )}>
+                                  {res.type === 'officer' ? 'Policial' : res.type === 'unit' ? 'Unidade' : 'Termo'}
+                                </div>
+                                <span className="text-xs font-bold text-[#5A5A40]/40 uppercase tracking-widest">Página {res.page}</span>
+                              </div>
+                            </div>
+                            <p className="text-xl font-serif font-bold mb-2 text-[#1a1a1a]">{res.match}</p>
+                            <p className="text-[#5A5A40]/70 italic font-serif leading-relaxed">"{res.context}"</p>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="p-16 text-center">
+                          <FileText className="w-12 h-12 text-[#5A5A40]/10 mx-auto mb-4" />
+                          <p className="text-[#5A5A40]/40 font-serif italic">Nenhuma identificação detalhada no Aditamento.</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {!bgFileName && !aditamentoFileName && (
+                  <div className="bg-white rounded-[32px] md:rounded-[40px] p-8 md:p-20 border border-black/5 text-center shadow-sm">
+                    <div className="w-16 h-16 md:w-24 md:h-24 bg-[#f5f5f0] rounded-full flex items-center justify-center mx-auto mb-6 md:mb-8">
+                      <FileSearch className="w-8 h-8 md:w-10 md:h-10 text-[#5A5A40]/20" />
+                    </div>
+                    <h3 className="text-2xl md:text-3xl font-serif font-bold mb-4">Nenhum documento analisado</h3>
+                    <p className="text-base md:text-lg text-[#5A5A40]/60 font-serif italic max-w-md mx-auto">
+                      Carregue um Boletim Geral ou Aditamento na área abaixo para iniciar a identificação automática.
+                    </p>
+                  </div>
+              )}
+
               {/* Upload Area (Admin Only) */}
               {(user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') && (
                 <div className="space-y-6">
+                  <div className="flex gap-4 mb-2">
+                    <button 
+                      onClick={() => setUploadDocType('BG')}
+                      className={cn(
+                        "flex-1 px-6 py-3 rounded-2xl font-bold text-xs uppercase tracking-widest transition-all",
+                        uploadDocType === 'BG' ? "bg-[#5A5A40] text-white shadow-md" : "bg-white text-[#5A5A40]/40 border border-black/5"
+                      )}
+                    >
+                      Boletim Geral (BG)
+                    </button>
+                    <button 
+                      onClick={() => setUploadDocType('ADITAMENTO')}
+                      className={cn(
+                        "flex-1 px-6 py-3 rounded-2xl font-bold text-xs uppercase tracking-widest transition-all",
+                        uploadDocType === 'ADITAMENTO' ? "bg-[#5A5A40] text-white shadow-md" : "bg-white text-[#5A5A40]/40 border border-black/5"
+                      )}
+                    >
+                      Aditamento
+                    </button>
+                  </div>
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
-                      <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Número do BG</label>
+                      <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Número do {uploadDocType}</label>
                       <input 
                         type="text"
                         placeholder="Ex: 065"
@@ -1403,7 +1877,7 @@ export default function App() {
                       />
                     </div>
                     <div className="space-y-2">
-                      <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Data do BG</label>
+                      <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Data do {uploadDocType}</label>
                       <input 
                         type="date"
                         value={uploadBgDate}
@@ -1454,7 +1928,7 @@ export default function App() {
                           )}>
                             {(!uploadBgNumber || !uploadBgDate) ? "Preencha o Número e Data acima" : "Arraste o PDF ou clique para selecionar"}
                           </p>
-                          <p className="text-[#5A5A40]/60">Boletim Geral da PMRN (PDF)</p>
+                          <p className="text-[#5A5A40]/60">{uploadDocType === 'BG' ? 'Boletim Geral' : 'Aditamento'} da PMRN (PDF)</p>
                         </>
                       )}
                     </div>
@@ -1462,64 +1936,6 @@ export default function App() {
                 </div>
               )}
 
-              {/* Results */}
-              <div className="space-y-8">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center shadow-sm border border-black/5">
-                      <FileText className="text-[#5A5A40] w-6 h-6" />
-                    </div>
-                    <div>
-                      <h3 className="text-3xl font-serif font-light">
-                        {results.length > 0 ? `Resultados Encontrados (${results.length})` : 'Resultados da Identificação'}
-                      </h3>
-                      <p className="text-[#5A5A40]/60 text-sm">
-                        {fileName ? `Arquivo: ${fileName}` : 'Nenhum boletim analisado recentemente.'}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 gap-6">
-                  {results.map((res, idx) => (
-                    <motion.div 
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: idx * 0.05 }}
-                      key={idx}
-                      className="bg-white rounded-3xl p-8 border border-black/5 hover:shadow-xl hover:shadow-black/5 transition-all"
-                    >
-                      <div className="flex items-start justify-between mb-6">
-                        <div className="flex items-center gap-4">
-                          <div className={cn(
-                            "w-12 h-12 rounded-2xl flex items-center justify-center",
-                            res.type === 'officer' ? "bg-blue-50 text-blue-600" : 
-                            res.type === 'unit' ? "bg-green-50 text-green-600" : "bg-orange-50 text-orange-600"
-                          )}>
-                            {res.type === 'officer' ? <Users className="w-6 h-6" /> : 
-                             res.type === 'unit' ? <Building2 className="w-6 h-6" /> : <Search className="w-6 h-6" />}
-                          </div>
-                          <div>
-                            <span className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/40 mb-1 block">
-                              {res.type === 'officer' ? 'Policial Identificado' : 
-                               res.type === 'unit' ? 'Unidade Identificada' : 'Termo Personalizado'}
-                            </span>
-                            <h4 className="text-xl font-bold">{res.match}</h4>
-                          </div>
-                        </div>
-                        <div className="px-4 py-2 bg-[#f5f5f0] rounded-full text-sm font-bold text-[#5A5A40]">
-                          Página {res.page}
-                        </div>
-                      </div>
-                      <div className="bg-[#f5f5f0]/50 rounded-2xl p-6 border border-black/5">
-                        <p className="text-[#5A5A40] italic font-serif leading-relaxed">
-                          {res.context}
-                        </p>
-                      </div>
-                    </motion.div>
-                  ))}
-                </div>
-              </div>
             </motion.div>
           )}
 
@@ -1532,23 +1948,23 @@ export default function App() {
               className="space-y-12"
             >
               <header>
-                <h2 className="text-5xl font-serif font-light mb-4">Minhas Palavras-Chave</h2>
-                <p className="text-[#5A5A40] italic font-serif">Gerencie os termos que o sistema deve identificar para você.</p>
+                <h2 className="text-3xl md:text-5xl font-serif font-light mb-4">Minhas Palavras-Chave</h2>
+                <p className="text-[#5A5A40] italic font-serif text-sm md:text-base">Gerencie os termos que o sistema deve identificar para você.</p>
               </header>
 
-              <div className="bg-white rounded-[40px] p-12 border border-black/5">
+              <div className="bg-white rounded-[32px] md:rounded-[40px] p-6 md:p-12 border border-black/5">
                 <div className="max-w-2xl">
-                  <h3 className="text-2xl font-serif mb-6">Suas Palavras-Chave</h3>
-                  <p className="text-[#5A5A40]/60 mb-8">
+                  <h3 className="text-xl md:text-2xl font-serif mb-6">Suas Palavras-Chave</h3>
+                  <p className="text-[#5A5A40]/60 mb-8 text-sm md:text-base">
                     Adicione termos como seu nome, matrícula ou unidades de interesse. 
                     O sistema destacará estes termos sempre que encontrá-los em um Boletim Geral.
                   </p>
 
-                  <div className="flex gap-4 mb-8">
+                  <div className="flex flex-col md:flex-row gap-4 mb-8">
                     <input 
                       type="text"
                       placeholder="Adicionar novo termo..."
-                      className="flex-1 bg-[#f5f5f0] border-none rounded-2xl px-6 py-4 focus:ring-2 focus:ring-[#5A5A40]/20"
+                      className="flex-1 bg-[#f5f5f0] border-none rounded-2xl px-6 py-4 focus:ring-2 focus:ring-[#5A5A40]/20 text-sm md:text-base"
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           const val = e.currentTarget.value.trim();
@@ -1578,7 +1994,7 @@ export default function App() {
                           }
                         }
                       }}
-                      className="bg-[#5A5A40] text-white px-8 rounded-2xl font-bold hover:bg-[#4a4a35] transition-all"
+                      className="bg-[#5A5A40] text-white px-8 py-4 md:py-0 rounded-2xl font-bold hover:bg-[#4a4a35] transition-all text-sm md:text-base"
                     >
                       Adicionar
                     </button>
@@ -1623,23 +2039,23 @@ export default function App() {
               exit={{ opacity: 0, x: -20 }}
               className="space-y-12"
             >
-              <header className="flex items-end justify-between">
+              <header className="flex flex-col md:flex-row md:items-end justify-between gap-6">
                 <div>
-                  <h2 className="text-5xl font-serif font-light mb-4">Banco de Dados</h2>
-                  <p className="text-[#5A5A40] italic font-serif">Gerencie os registros para identificação automática.</p>
+                  <h2 className="text-3xl md:text-5xl font-serif font-light mb-4">Banco de Dados</h2>
+                  <p className="text-[#5A5A40] italic font-serif text-sm md:text-base">Gerencie os registros para identificação automática.</p>
                 </div>
-                <div className="flex bg-white p-2 rounded-full border border-black/5">
+                <div className="flex flex-wrap bg-white p-2 rounded-2xl md:rounded-full border border-black/5">
                   {[
                     { id: 'officers', label: 'Policiais' },
                     { id: 'units', label: 'Unidades' },
                     { id: 'terms', label: 'Termos' },
-                    { id: 'admins', label: 'Administradores Gmail' }
+                    { id: 'admins', label: 'Admins' }
                   ].map(tab => (
                     <button
                       key={tab.id}
                       onClick={() => setDbTab(tab.id as any)}
                       className={cn(
-                        "px-8 py-3 rounded-full text-sm font-bold transition-all",
+                        "px-4 md:px-8 py-2 md:py-3 rounded-xl md:rounded-full text-xs md:text-sm font-bold transition-all flex-1 md:flex-none",
                         dbTab === tab.id ? "bg-[#5A5A40] text-white" : "text-[#5A5A40]/60 hover:text-[#5A5A40]"
                       )}
                     >
@@ -1650,12 +2066,12 @@ export default function App() {
               </header>
 
               {/* Forms */}
-              <div className="bg-white rounded-[40px] p-10 border border-black/5 shadow-sm space-y-8">
+              <div className="bg-white rounded-[32px] md:rounded-[40px] p-6 md:p-10 border border-black/5 shadow-sm space-y-8">
                 {dbTab === 'officers' && (
                   <div className="space-y-8">
-                    <div className="flex items-center justify-between pb-6 border-b border-black/5">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-black/5">
                       <h3 className="text-xl font-serif">Adicionar Policial</h3>
-                      <div className="relative">
+                      <div className="relative w-full md:w-auto">
                         <input 
                           type="file" 
                           accept=".xlsx, .xls, .csv" 
@@ -1665,10 +2081,10 @@ export default function App() {
                         />
                         <button 
                           disabled={isBulkUploading}
-                          className="flex items-center gap-2 px-6 py-3 bg-[#f5f5f0] text-[#5A5A40] rounded-full hover:bg-[#e5e5e0] transition-colors font-bold text-sm"
+                          className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-[#f5f5f0] text-[#5A5A40] rounded-full hover:bg-[#e5e5e0] transition-colors font-bold text-sm"
                         >
                           {isBulkUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileSpreadsheet className="w-4 h-4" />}
-                          Importar Planilha (Excel/CSV)
+                          Importar Planilha
                         </button>
                       </div>
                     </div>
@@ -2009,10 +2425,10 @@ function LoginScreen({ onLogin, onAdminLogin, isLoggingIn }: { onLogin: (reg: st
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="w-full max-w-md bg-white rounded-[40px] p-12 shadow-xl shadow-black/5 border border-black/5"
+        className="w-full max-w-md bg-white rounded-[32px] md:rounded-[40px] p-8 md:p-12 shadow-xl shadow-black/5 border border-black/5"
       >
         <div className="flex flex-col items-center mb-10">
-          <div className="w-24 h-24 mb-6 relative">
+          <div className="w-20 h-20 md:w-24 md:h-24 mb-6 relative">
             <div className="absolute inset-0 bg-[#5A5A40]/5 rounded-3xl -rotate-6"></div>
             <img 
               src="https://lh3.googleusercontent.com/d/1ZeVU9ZIkPN3wqDDLTMbTM3zuH1KnUMbl" 
@@ -2021,8 +2437,8 @@ function LoginScreen({ onLogin, onAdminLogin, isLoggingIn }: { onLogin: (reg: st
               referrerPolicy="no-referrer"
             />
           </div>
-          <h1 className="text-4xl font-serif font-light tracking-tight mb-2">SIA-BG</h1>
-          <p className="text-[#5A5A40]/60 italic font-serif text-center">Sistema de Identificação Automatizada</p>
+          <h1 className="text-3xl md:text-4xl font-serif font-light tracking-tight mb-2">SIA-PMRN</h1>
+          <p className="text-[#5A5A40]/60 italic font-serif text-center text-sm md:text-base">Sistema de Identificação Automatizada</p>
         </div>
 
         <form 
@@ -2133,14 +2549,14 @@ function ChangePasswordModal({ onSave, onCancel }: { onSave: (pass: string) => v
       <motion.div 
         initial={{ opacity: 0, scale: 0.9 }}
         animate={{ opacity: 1, scale: 1 }}
-        className="w-full max-w-md bg-white rounded-[40px] p-12 shadow-2xl border border-black/5"
+        className="w-full max-w-md bg-white rounded-[32px] md:rounded-[40px] p-8 md:p-12 shadow-2xl border border-black/5"
       >
         <div className="flex flex-col items-center mb-8">
-          <div className="w-16 h-16 bg-blue-50 rounded-2xl flex items-center justify-center mb-6">
-            <Key className="text-blue-600 w-8 h-8" />
+          <div className="w-14 h-14 md:w-16 md:h-16 bg-blue-50 rounded-2xl flex items-center justify-center mb-6">
+            <Key className="text-blue-600 w-6 h-6 md:w-8 md:h-8" />
           </div>
-          <h2 className="text-3xl font-serif font-light mb-2">Alterar Senha</h2>
-          <p className="text-[#5A5A40]/60 text-center">Defina uma nova senha segura para sua conta.</p>
+          <h2 className="text-2xl md:text-3xl font-serif font-light mb-2">Alterar Senha</h2>
+          <p className="text-[#5A5A40]/60 text-center text-sm md:text-base">Defina uma nova senha segura para sua conta.</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
@@ -2172,6 +2588,78 @@ function ChangePasswordModal({ onSave, onCancel }: { onSave: (pass: string) => v
             className="w-full bg-[#5A5A40] text-white rounded-2xl py-5 font-bold shadow-lg shadow-[#5A5A40]/20 hover:bg-[#4a4a35] transition-all"
           >
             Salvar Nova Senha
+          </button>
+          
+          <button 
+            type="button"
+            onClick={onCancel}
+            className="w-full text-sm font-bold text-[#5A5A40]/40 hover:text-red-500 transition-colors"
+          >
+            Cancelar
+          </button>
+        </form>
+      </motion.div>
+    </div>
+  );
+}
+
+function ProfileUpdateModal({ initialEmail, initialPhone, onSave, onCancel }: { initialEmail?: string, initialPhone?: string, onSave: (email: string, phone: string) => void, onCancel: () => void }) {
+  const [email, setEmail] = useState(initialEmail || '');
+  const [phone, setPhone] = useState(initialPhone || '');
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email || !phone) {
+      toast.error('Por favor, preencha todos os campos.');
+      return;
+    }
+    onSave(email, phone);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-6">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.9 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="w-full max-w-md bg-white rounded-[32px] md:rounded-[40px] p-8 md:p-12 shadow-2xl border border-black/5"
+      >
+        <div className="flex flex-col items-center mb-8">
+          <div className="w-14 h-14 md:w-16 md:h-16 bg-blue-50 rounded-2xl flex items-center justify-center mb-6">
+            <UserIcon className="text-blue-600 w-6 h-6 md:w-8 md:h-8" />
+          </div>
+          <h2 className="text-2xl md:text-3xl font-serif font-light mb-2">Dados Cadastrais</h2>
+          <p className="text-[#5A5A40]/60 text-center text-sm md:text-base">Mantenha seus dados atualizados para receber informações importantes.</p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <div className="space-y-2">
+            <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">E-mail</label>
+            <input 
+              required
+              type="email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              className="w-full bg-[#f5f5f0] border-none rounded-2xl px-6 py-4 focus:ring-2 focus:ring-[#5A5A40]/20"
+              placeholder="seu@email.com"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Telefone / WhatsApp</label>
+            <input 
+              required
+              type="tel"
+              value={phone}
+              onChange={e => setPhone(e.target.value)}
+              className="w-full bg-[#f5f5f0] border-none rounded-2xl px-6 py-4 focus:ring-2 focus:ring-[#5A5A40]/20"
+              placeholder="(00) 00000-0000"
+            />
+          </div>
+
+          <button 
+            type="submit"
+            className="w-full bg-[#5A5A40] text-white rounded-2xl py-5 font-bold shadow-lg shadow-[#5A5A40]/20 hover:bg-[#4a4a35] transition-all"
+          >
+            Salvar Dados
           </button>
           
           <button 
