@@ -1478,18 +1478,6 @@ export default function App() {
                       </p>
                     </div>
                   </div>
-                  {results.length > 0 && (
-                    <div className="flex gap-4">
-                      <button className="flex items-center gap-2 px-6 py-3 bg-white rounded-full border border-black/5 hover:bg-[#f5f5f0] transition-colors">
-                        <Filter className="w-4 h-4" />
-                        Filtrar
-                      </button>
-                      <button className="flex items-center gap-2 px-6 py-3 bg-[#5A5A40] text-white rounded-full hover:bg-[#4a4a35] transition-colors">
-                        <Download className="w-4 h-4" />
-                        Exportar Relatório
-                      </button>
-                    </div>
-                  )}
                 </div>
 
                 <div className="grid grid-cols-1 gap-6">
