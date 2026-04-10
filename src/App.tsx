@@ -182,6 +182,9 @@ export default function App() {
   const [isBulkUploading, setIsBulkUploading] = useState(false);
   const [newAdminEmail, setNewAdminEmail] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [showLogs, setShowLogs] = useState(false);
+  const [systemLogs, setSystemLogs] = useState<any[]>([]);
+  const [isLoadingLogs, setIsLoadingLogs] = useState(false);
 
   // Auth Listener
   useEffect(() => {
@@ -287,9 +290,10 @@ export default function App() {
     return () => unsubAdmins();
   }, [user]);
 
-  const ADMIN_EMAIL = "chandooul@gmail.com";
+  const MASTER_ADMINS = ["chandooul@gmail.com", "secretaria5bpmrn@gmail.com"];
+  const isMasterAdmin = (email?: string | null) => email && MASTER_ADMINS.some(e => e.toLowerCase() === email.toLowerCase());
 
-  const isAuthorizedAdmin = (user?.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase()) || 
+  const isAuthorizedAdmin = isMasterAdmin(user?.email) || 
                             authorizedAdmins.some(a => a.email.toLowerCase() === user?.email?.toLowerCase());
   const isAdmin = isAuthorizedAdmin || loggedInOfficer?.role === 'admin';
 
@@ -315,7 +319,7 @@ export default function App() {
       const email = loggedUser.email?.toLowerCase() || '';
       console.log('Login successful for:', email);
       
-      let isAuthorized = email === ADMIN_EMAIL.toLowerCase();
+      let isAuthorized = isMasterAdmin(email);
       
       if (!isAuthorized) {
         // Direct check in Firestore to avoid stale state issues during login
@@ -565,8 +569,8 @@ export default function App() {
   };
 
   const removeAdmin = async (id: string, email: string) => {
-    if (email === ADMIN_EMAIL) {
-      toast.error('O administrador mestre não pode ser removido.');
+    if (isMasterAdmin(email)) {
+      toast.error('Administradores mestres não podem ser removidos.');
       return;
     }
     if (!confirm(`Deseja remover o acesso administrativo de ${email}?`)) return;
@@ -586,6 +590,48 @@ export default function App() {
       toast.success('Item removido.');
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, col);
+    }
+  };
+
+  const testEmail = async () => {
+    if (!user?.email) return;
+    
+    const toastId = toast.loading('Enviando e-mail de teste...');
+    try {
+      const response = await fetch('/api/test-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: user.email })
+      });
+      
+      const data = await response.json();
+      if (data.success) {
+        toast.success('E-mail de teste enviado com sucesso! Verifique sua caixa de entrada.', { id: toastId });
+      } else {
+        throw new Error(data.error || 'Erro desconhecido');
+      }
+    } catch (err: any) {
+      console.error('Test Email Error:', err);
+      toast.error(`Falha no envio: ${err.message}`, { id: toastId });
+    }
+  };
+
+  const fetchLogs = async () => {
+    setIsLoadingLogs(true);
+    try {
+      const response = await fetch('/api/logs');
+      const data = await response.json();
+      if (data.success) {
+        setSystemLogs(data.logs);
+        setShowLogs(true);
+      } else {
+        toast.error('Erro ao buscar logs.');
+      }
+    } catch (err) {
+      console.error('Fetch Logs Error:', err);
+      toast.error('Erro de conexão ao buscar logs.');
+    } finally {
+      setIsLoadingLogs(false);
     }
   };
 
@@ -1216,7 +1262,7 @@ export default function App() {
         }
 
         // If admin, save to Firestore
-        if (user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') {
+        if (isMasterAdmin(user?.email) || loggedInOfficer?.role === 'admin') {
           try {
             const docId = currentDocType === 'BG' ? 'latest_bg' : 'latest_aditamento';
             await setDoc(doc(db, 'bg_analysis', docId), {
@@ -1231,6 +1277,39 @@ export default function App() {
               bgDate: uploadBgDate
             });
             toast.success('Análise salva com sucesso no banco de dados!');
+
+            // Log analysis save
+            try {
+              await addDoc(collection(db, 'system_logs'), {
+                level: 'info',
+                message: `Novo ${currentDocType} (${uploadBgNumber}) processado e salvo (Append).`,
+                timestamp: new Date().toISOString(),
+                details: { fileName: name, uploadedBy: user?.email || loggedInOfficer?.registration }
+              });
+            } catch (logErr) { console.error('Log error:', logErr); }
+
+            // Trigger email notifications
+            try {
+              setProcessingMessage('Enviando notificações por e-mail...');
+              const response = await fetch('/api/notify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  fullText: newFullText,
+                  docInfo: {
+                    type: currentDocType,
+                    number: uploadBgNumber,
+                    date: uploadBgDate
+                  }
+                })
+              });
+              const data = await response.json();
+              if (data.success && data.notifiedCount > 0) {
+                toast.success(`${data.notifiedCount} policiais notificados por e-mail.`);
+              }
+            } catch (notifyError) {
+              console.error('Erro ao enviar notificações:', notifyError);
+            }
           } catch (error) {
             console.error('Erro ao salvar análise:', error);
             toast.error('O arquivo foi processado, mas não pôde ser salvo no banco de dados. Verifique suas permissões.');
@@ -1248,7 +1327,7 @@ export default function App() {
         }
 
         // If admin, save to Firestore
-        if (user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') {
+        if (isMasterAdmin(user?.email) || loggedInOfficer?.role === 'admin') {
           try {
             const docId = currentDocType === 'BG' ? 'latest_bg' : 'latest_aditamento';
             await setDoc(doc(db, 'bg_analysis', docId), {
@@ -1263,6 +1342,39 @@ export default function App() {
               bgDate: uploadBgDate
             });
             toast.success('Análise salva com sucesso no banco de dados!');
+
+            // Log analysis save
+            try {
+              await addDoc(collection(db, 'system_logs'), {
+                level: 'info',
+                message: `Novo ${currentDocType} (${uploadBgNumber}) processado e salvo (Novo).`,
+                timestamp: new Date().toISOString(),
+                details: { fileName: name, uploadedBy: user?.email || loggedInOfficer?.registration }
+              });
+            } catch (logErr) { console.error('Log error:', logErr); }
+
+            // Trigger email notifications
+            try {
+              setProcessingMessage('Enviando notificações por e-mail...');
+              const response = await fetch('/api/notify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  fullText: pagesText,
+                  docInfo: {
+                    type: currentDocType,
+                    number: uploadBgNumber,
+                    date: uploadBgDate
+                  }
+                })
+              });
+              const data = await response.json();
+              if (data.success && data.notifiedCount > 0) {
+                toast.success(`${data.notifiedCount} policiais notificados por e-mail.`);
+              }
+            } catch (notifyError) {
+              console.error('Erro ao enviar notificações:', notifyError);
+            }
           } catch (error) {
             console.error('Erro ao salvar análise:', error);
             toast.error('O arquivo foi processado, mas não pôde ser salvo no banco de dados. Verifique suas permissões.');
@@ -1473,7 +1585,7 @@ export default function App() {
             </button>
           )}
 
-          {(user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') && (
+          {(isMasterAdmin(user?.email) || loggedInOfficer?.role === 'admin') && (
             <>
               <button
                 onClick={() => {
@@ -1538,7 +1650,7 @@ export default function App() {
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-semibold truncate text-[#1a1a1a]">{user ? user.displayName : loggedInOfficer?.name}</p>
                   <p className="text-xs text-[#5A5A40]/60 truncate">
-                    {(user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') ? 'Administrador' : 'Trocar Senha'}
+                    {isMasterAdmin(user?.email) || loggedInOfficer?.role === 'admin' ? 'Administrador' : 'Trocar Senha'}
                   </p>
                 </div>
               </button>
@@ -1790,7 +1902,7 @@ export default function App() {
               )}
 
               {/* Upload Area (Admin Only) */}
-              {(user?.email === ADMIN_EMAIL || loggedInOfficer?.role === 'admin') && (
+              {(isMasterAdmin(user?.email) || loggedInOfficer?.role === 'admin') && (
                 <div className="space-y-6">
                   <div className="flex gap-4 mb-2">
                     <button 
@@ -2321,17 +2433,19 @@ export default function App() {
                     <div className="mt-8">
                       <h4 className="text-sm font-bold uppercase tracking-widest text-[#5A5A40]/40 mb-4">Administradores Autorizados</h4>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="bg-[#f5f5f0] p-4 rounded-2xl flex items-center justify-between border border-[#5A5A40]/10">
-                          <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 bg-[#5A5A40] text-white rounded-full flex items-center justify-center">
-                              <ShieldCheck className="w-5 h-5" />
-                            </div>
-                            <div>
-                              <p className="font-bold text-sm">{ADMIN_EMAIL}</p>
-                              <p className="text-[10px] text-[#5A5A40]/60 uppercase font-bold tracking-widest">Administrador Mestre</p>
+                        {MASTER_ADMINS.map(email => (
+                          <div key={email} className="bg-[#f5f5f0] p-4 rounded-2xl flex items-center justify-between border border-[#5A5A40]/10">
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 bg-[#5A5A40] text-white rounded-full flex items-center justify-center">
+                                <ShieldCheck className="w-5 h-5" />
+                              </div>
+                              <div>
+                                <p className="font-bold text-sm">{email}</p>
+                                <p className="text-[10px] text-[#5A5A40]/60 uppercase font-bold tracking-widest">Administrador Mestre</p>
+                              </div>
                             </div>
                           </div>
-                        </div>
+                        ))}
                         {authorizedAdmins.map(admin => (
                           <div key={admin.id} className="bg-white p-4 rounded-2xl flex items-center justify-between border border-black/5 shadow-sm group">
                             <div className="flex items-center gap-3">
@@ -2502,9 +2616,114 @@ export default function App() {
                     </p>
                   </div>
                 </div>
+
+                {isMasterAdmin(user?.email) && (
+                  <div className="bg-white rounded-[40px] p-10 border-2 border-amber-100 bg-amber-50/30">
+                    <div className="flex items-center gap-3 mb-6">
+                      <ShieldCheck className="w-8 h-8 text-amber-600" />
+                      <h3 className="text-2xl font-serif text-amber-900">Ferramentas de Diagnóstico</h3>
+                    </div>
+                    <div className="space-y-6">
+                      <div className="flex items-center justify-between p-4 bg-white rounded-2xl border border-amber-100">
+                        <div>
+                          <p className="font-bold text-amber-900">Teste de Notificação</p>
+                          <p className="text-sm text-amber-700/60">Envia um e-mail de teste para <b>{user.email}</b> via Zoho</p>
+                        </div>
+                        <button 
+                          onClick={testEmail}
+                          className="px-6 py-3 bg-amber-600 text-white font-bold rounded-xl hover:bg-amber-700 transition-all shadow-lg shadow-amber-900/20"
+                        >
+                          Testar Zoho
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between p-4 bg-white rounded-2xl border border-amber-100">
+                        <div>
+                          <p className="font-bold text-amber-900">Logs do Sistema</p>
+                          <p className="text-sm text-amber-700/60">Visualizar histórico de atividades e erros do servidor</p>
+                        </div>
+                        <button 
+                          onClick={fetchLogs}
+                          disabled={isLoadingLogs}
+                          className="px-6 py-3 bg-slate-800 text-white font-bold rounded-xl hover:bg-slate-900 transition-all shadow-lg shadow-slate-900/20 disabled:opacity-50"
+                        >
+                          {isLoadingLogs ? 'Carregando...' : 'Ver Logs'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </motion.div>
           )}
+
+          {/* Logs Modal */}
+          <AnimatePresence>
+            {showLogs && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 md:p-8">
+                <motion.div 
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  onClick={() => setShowLogs(false)}
+                  className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+                />
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                  className="relative w-full max-w-5xl max-h-[80vh] bg-white rounded-[40px] shadow-2xl overflow-hidden flex flex-col"
+                >
+                  <header className="p-8 border-b border-black/5 flex items-center justify-between bg-[#f5f5f0]/30">
+                    <div>
+                      <h3 className="text-3xl font-serif font-light">Logs do Sistema</h3>
+                      <p className="text-sm text-[#5A5A40] italic">Últimas 100 atividades registradas</p>
+                    </div>
+                    <button 
+                      onClick={() => setShowLogs(false)}
+                      className="w-12 h-12 rounded-2xl bg-white border border-black/5 flex items-center justify-center hover:bg-red-50 hover:text-red-600 transition-all"
+                    >
+                      <X className="w-6 h-6" />
+                    </button>
+                  </header>
+                  
+                  <div className="flex-1 overflow-auto p-8">
+                    <div className="space-y-4">
+                      {systemLogs.length === 0 ? (
+                        <div className="text-center py-20 text-[#5A5A40]/40 italic">
+                          Nenhum log registrado no momento.
+                        </div>
+                      ) : (
+                        systemLogs.map((log, i) => (
+                          <div key={log.id || i} className="p-4 rounded-2xl border border-black/5 bg-[#f5f5f0]/10 font-mono text-xs">
+                            <div className="flex items-center gap-3 mb-2">
+                              <span className="px-2 py-0.5 rounded bg-slate-200 text-slate-700 font-bold">
+                                {new Date(log.timestamp).toLocaleString('pt-BR')}
+                              </span>
+                              <span className={cn(
+                                "px-2 py-0.5 rounded font-bold uppercase",
+                                log.level === 'error' ? "bg-red-100 text-red-700" : 
+                                log.level === 'warn' ? "bg-amber-100 text-amber-700" : 
+                                "bg-blue-100 text-blue-700"
+                              )}>
+                                {log.level || 'info'}
+                              </span>
+                            </div>
+                            <p className="text-slate-900 font-bold mb-1">{log.message}</p>
+                            {log.details && (
+                              <pre className="mt-2 p-3 bg-black/5 rounded-lg overflow-x-auto text-[10px] text-slate-600">
+                                {typeof log.details === 'object' ? JSON.stringify(log.details, null, 2) : log.details}
+                              </pre>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
         </AnimatePresence>
       </main>
     </div>
