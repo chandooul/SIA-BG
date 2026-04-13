@@ -1013,24 +1013,27 @@ export default function App() {
         });
 
         downloadUrl = await uploadPromise;
-        console.log('PDF uploaded successfully');
+        console.log('PDF uploaded successfully to Storage:', downloadUrl);
         setPdfUrl(downloadUrl);
+        toast.success('Arquivo salvo permanentemente no servidor.');
       } catch (storageErr: any) {
-        if (storageErr.code !== 'storage/canceled' && storageErr.message !== 'stuck' && storageErr.message !== 'timeout') {
-          console.error('Storage Upload Error:', storageErr);
-        }
+        console.error('Full Storage Error Object:', storageErr);
+        
+        const errorCode = storageErr.code || 'unknown';
+        const errorMessage = storageErr.message || 'Erro desconhecido';
+        
         // Fallback to local URL for immediate analysis
         downloadUrl = URL.createObjectURL(blob);
         setPdfUrl(downloadUrl);
         
-        if (storageErr.message === 'timeout') {
-          toast.warning('O upload demorou muito. O arquivo será analisado localmente, mas não ficará salvo permanentemente.');
-        } else if (storageErr.message === 'stuck') {
-          toast.warning('O envio ao servidor está lento. Prosseguindo com análise local para agilizar...');
-        } else if (storageErr.code === 'storage/unauthorized') {
-          toast.error('Sem permissão para salvar no Storage. Verifique as regras de segurança no Console Firebase.');
-        } else if (storageErr.code !== 'storage/canceled') {
-          toast.warning('Falha ao salvar arquivo no servidor. Analisando cópia local...');
+        if (errorCode === 'storage/unauthorized') {
+          toast.error('Erro de Permissão: O servidor recusou o arquivo. Verifique se você está logado como administrador.');
+        } else if (errorMessage === 'timeout') {
+          toast.warning('O upload demorou muito. O arquivo será analisado localmente, mas não ficará salvo para outros dispositivos.');
+        } else if (errorMessage === 'stuck') {
+          toast.warning('O envio ao servidor está lento. Prosseguindo com análise local...');
+        } else {
+          toast.warning(`Aviso: O arquivo não foi salvo no servidor (${errorCode}). Ele funcionará apenas neste dispositivo.`);
         }
       }
       
