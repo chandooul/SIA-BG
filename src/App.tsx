@@ -942,102 +942,63 @@ export default function App() {
       setProcessingMessage('Iniciando envio...');
       setProgress(10); 
       
-      let downloadUrl = '';
-      const sanitizedName = `${Date.now()}_${name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    let storageUrl: string | null = null;
+    const sanitizedName = `${Date.now()}_${name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    
+    try {
+      const storageRef = ref(storage, `bg_files/${sanitizedName}`);
+      console.log('Storage reference created:', storageRef.fullPath);
       
-      try {
-        const storageRef = ref(storage, `bg_files/${sanitizedName}`);
-        console.log('Storage reference created:', storageRef.fullPath);
-        
-        // Use uploadBytesResumable for better progress tracking and timeout handling
-        const uploadTask = uploadBytesResumable(storageRef, blob);
-        
-        const uploadPromise = new Promise<string>((resolve, reject) => {
-          let lastBytes = 0;
-          let lastUpdate = Date.now();
-          
-          const timeout = setTimeout(() => {
-            console.error('Upload timeout reached');
-            uploadTask.cancel();
-            reject(new Error('timeout'));
-          }, 300000); // 5 minutes timeout
+      const uploadTask = uploadBytesResumable(storageRef, blob);
+      
+      const uploadPromise = new Promise<string>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          uploadTask.cancel();
+          reject(new Error('timeout'));
+        }, 300000);
 
-          const stuckCheck = setInterval(() => {
-            if (Date.now() - lastUpdate > 45000 && lastBytes === 0) {
-              console.warn('Upload seems stuck at 0%');
-              clearInterval(stuckCheck);
-              uploadTask.cancel();
-              reject(new Error('stuck'));
+        uploadTask.on('state_changed', 
+          (snapshot) => {
+            const percent = Math.round((snapshot.bytesTransferred / (snapshot.totalBytes || 1)) * 100);
+            setProgress(Math.round(10 + (percent * 0.3)));
+            setProcessingMessage(`Enviando para o servidor: ${percent}%`);
+          }, 
+          (error) => {
+            clearTimeout(timeout);
+            reject(error);
+          }, 
+          async () => {
+            clearTimeout(timeout);
+            try {
+              const url = await getDownloadURL(uploadTask.snapshot.ref);
+              resolve(url);
+            } catch (urlErr) {
+              reject(urlErr);
             }
-          }, 5000);
+          }
+        );
+      });
 
-          uploadTask.on('state_changed', 
-            (snapshot) => {
-              const total = snapshot.totalBytes || 1;
-              const transferred = snapshot.bytesTransferred;
-              
-              if (transferred > lastBytes) {
-                lastBytes = transferred;
-                lastUpdate = Date.now();
-              }
-              
-              const uploadProgress = (transferred / total) * 30; // 0 to 30%
-              const currentProgress = Math.round(10 + uploadProgress);
-              const percent = Math.round((transferred / total) * 100);
-              
-              setProgress(currentProgress);
-              setProcessingMessage(`Enviando: ${percent}%`);
-              console.log(`Upload progress: ${percent}% (${transferred}/${total} bytes) - State: ${snapshot.state}`);
-            }, 
-            (error: any) => {
-              clearTimeout(timeout);
-              clearInterval(stuckCheck);
-              if (error.code !== 'storage/canceled') {
-                console.error('Upload task error:', error);
-              }
-              reject(error);
-            }, 
-            async () => {
-              console.log('Upload task completed successfully');
-              clearTimeout(timeout);
-              clearInterval(stuckCheck);
-              try {
-                const url = await getDownloadURL(uploadTask.snapshot.ref);
-                resolve(url);
-              } catch (urlErr) {
-                console.error('Error getting download URL:', urlErr);
-                reject(urlErr);
-              }
-            }
-          );
-        });
-
-        downloadUrl = await uploadPromise;
-        console.log('PDF uploaded successfully to Storage:', downloadUrl);
-        setPdfUrl(downloadUrl);
-        toast.success('Arquivo salvo permanentemente no servidor.');
-      } catch (storageErr: any) {
-        console.error('Full Storage Error Object:', storageErr);
-        
-        const errorCode = storageErr.code || 'unknown';
-        const errorMessage = storageErr.message || 'Erro desconhecido';
-        
-        // Fallback to local URL for immediate analysis
-        downloadUrl = URL.createObjectURL(blob);
-        setPdfUrl(downloadUrl);
-        
-        if (errorCode === 'storage/unauthorized') {
-          toast.error('Erro de Permissão: O servidor recusou o arquivo. Verifique se você está logado como administrador.');
-        } else if (errorMessage === 'timeout') {
-          toast.warning('O upload demorou muito. O arquivo será analisado localmente, mas não ficará salvo para outros dispositivos.');
-        } else if (errorMessage === 'stuck') {
-          toast.warning('O envio ao servidor está lento. Prosseguindo com análise local...');
-        } else {
-          toast.warning(`Aviso: O arquivo não foi salvo no servidor (${errorCode}). Ele funcionará apenas neste dispositivo.`);
-        }
+      storageUrl = await uploadPromise;
+      console.log('PDF uploaded successfully to Storage:', storageUrl);
+      toast.success('Arquivo salvo permanentemente no servidor.');
+    } catch (storageErr: any) {
+      console.error('Storage Upload Error:', storageErr);
+      storageUrl = null;
+      
+      const errorCode = storageErr.code || 'unknown';
+      if (errorCode === 'storage/unauthorized') {
+        toast.error('Erro de Permissão: O servidor de arquivos recusou o acesso. Verifique as regras de Storage.');
+      } else {
+        toast.warning('Aviso: O arquivo não pôde ser salvo no servidor. Ele funcionará apenas neste dispositivo.');
       }
-      
-      setProgress(40);
+    }
+    
+    // Always create a local URL for immediate use/preview
+    const localUrl = URL.createObjectURL(blob);
+    setPdfUrl(localUrl);
+    
+    setProgress(40);
 
       console.log('Initializing PDF.js...');
       setProcessingMessage('Carregando motor de análise (PDF.js)...');
@@ -1255,28 +1216,23 @@ export default function App() {
         if (currentDocType === 'BG') {
           setBgResults(newResults);
           setBgFullText(newFullText);
-          setBgPdfUrl(downloadUrl);
+          setBgPdfUrl(storageUrl || localUrl);
         } else {
           setAditamentoResults(newResults);
           setAditamentoFullText(newFullText);
-          setAditamentoPdfUrl(downloadUrl);
+          setAditamentoPdfUrl(storageUrl || localUrl);
         }
 
         // If admin, save to Firestore
         if (isMasterAdmin(user?.email) || loggedInOfficer?.role === 'admin') {
           try {
             const docId = currentDocType === 'BG' ? 'latest_bg' : 'latest_aditamento';
-            const isBlob = downloadUrl.startsWith('blob:');
             
-            if (isBlob) {
-              console.warn('Saving to Firestore with null pdfUrl because upload failed (blob detected)');
-            }
-
             await setDoc(doc(db, 'bg_analysis', docId), {
               fileName: currentFileName ? `${currentFileName} + ${name}` : name,
               results: newResults,
               fullText: newFullText,
-              pdfUrl: isBlob ? null : downloadUrl,
+              pdfUrl: storageUrl, // NEVER save localUrl (blob) to Firestore
               uploadedAt: new Date().toISOString(),
               uploadedBy: user?.displayName || loggedInOfficer?.name || 'Administrador',
               docType: currentDocType,
@@ -1326,28 +1282,23 @@ export default function App() {
         if (currentDocType === 'BG') {
           setBgResults(found);
           setBgFullText(pagesText);
-          setBgPdfUrl(downloadUrl);
+          setBgPdfUrl(storageUrl || localUrl);
         } else {
           setAditamentoResults(found);
           setAditamentoFullText(pagesText);
-          setAditamentoPdfUrl(downloadUrl);
+          setAditamentoPdfUrl(storageUrl || localUrl);
         }
 
         // If admin, save to Firestore
         if (isMasterAdmin(user?.email) || loggedInOfficer?.role === 'admin') {
           try {
             const docId = currentDocType === 'BG' ? 'latest_bg' : 'latest_aditamento';
-            const isBlob = downloadUrl.startsWith('blob:');
-
-            if (isBlob) {
-              console.warn('Saving to Firestore with null pdfUrl because upload failed (blob detected)');
-            }
 
             await setDoc(doc(db, 'bg_analysis', docId), {
               fileName: name,
               results: found,
               fullText: pagesText,
-              pdfUrl: isBlob ? null : downloadUrl,
+              pdfUrl: storageUrl, // NEVER save localUrl (blob) to Firestore
               uploadedAt: new Date().toISOString(),
               uploadedBy: user?.displayName || loggedInOfficer?.name || 'Administrador',
               docType: currentDocType,
