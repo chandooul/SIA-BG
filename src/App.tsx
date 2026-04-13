@@ -959,28 +959,17 @@ export default function App() {
         isAdmin: loggedInOfficer?.role === 'admin'
       });
       
-      setProcessingMessage('Enviando arquivo para o servidor seguro...');
+      setProcessingMessage('Enviando arquivo para o servidor seguro (isso pode levar alguns segundos)...');
+      setProgress(20);
       
-      const uploadTask = uploadBytesResumable(storageRef, blob);
+      // Tentar upload direto (uploadBytes) que é mais robusto em alguns ambientes de iframe
+      console.log('Iniciando upload direto com uploadBytes...');
+      const uploadResult = await uploadBytes(storageRef, blob);
+      console.log('Upload direto concluído:', uploadResult);
       
-      storageUrl = await new Promise<string | null>((resolve, reject) => {
-        uploadTask.on('state_changed', 
-          (snapshot) => {
-            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-            setProcessingMessage(`Enviando para o servidor: ${Math.round(progress)}%`);
-            console.log(`Progresso do upload: ${progress}%`);
-          },
-          (error) => {
-            console.error('Erro detalhado durante o upload:', error);
-            reject(error);
-          },
-          async () => {
-            console.log('Upload finalizado com sucesso. Obtendo URL pública...');
-            const url = await getDownloadURL(uploadTask.snapshot.ref);
-            resolve(url);
-          }
-        );
-      });
+      setProgress(35);
+      storageUrl = await getDownloadURL(uploadResult.ref);
+      setProgress(40);
 
       if (storageUrl) {
         console.log('URL do Storage obtida com sucesso:', storageUrl);
@@ -989,7 +978,7 @@ export default function App() {
         console.warn('Upload concluído mas URL retornou vazia.');
       }
     } catch (storageErr: any) {
-      console.error('Erro CRÍTICO no Storage:', storageErr);
+      console.error('Erro detalhado no Storage:', storageErr);
       storageUrl = null;
       
       const errorCode = storageErr.code || 'unknown';
@@ -997,6 +986,8 @@ export default function App() {
       
       if (errorCode === 'storage/unauthorized') {
         toast.error('Erro de Permissão: O servidor recusou o arquivo. Verifique se você está logado como administrador.');
+      } else if (errorCode === 'storage/retry-limit-exceeded') {
+        toast.error('Erro de Conexão: O upload demorou muito. Verifique sua internet.');
       } else {
         toast.warning(`Aviso: O arquivo não pôde ser salvo no servidor (${errorCode}). Erro: ${errorMessage}`);
       }
