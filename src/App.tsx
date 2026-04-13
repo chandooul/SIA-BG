@@ -946,29 +946,63 @@ export default function App() {
     const sanitizedName = `${Date.now()}_${name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
     
     try {
+      if (!user && !loggedInOfficer) {
+        throw new Error('Usuário não autenticado. Por favor, faça login novamente.');
+      }
+
       const storageRef = ref(storage, `bg_files/${sanitizedName}`);
-      console.log('Tentando upload para:', storageRef.fullPath);
+      console.log('Iniciando upload para Firebase Storage:', storageRef.fullPath);
+      console.log('Dados do usuário:', { 
+        googleEmail: user?.email, 
+        officerReg: loggedInOfficer?.registration,
+        isMaster: isMasterAdmin(user?.email),
+        isAdmin: loggedInOfficer?.role === 'admin'
+      });
       
-      setProcessingMessage('Enviando arquivo para o servidor...');
-      const snapshot = await uploadBytes(storageRef, blob);
-      console.log('Upload concluído, obtendo URL...');
+      setProcessingMessage('Enviando arquivo para o servidor seguro...');
       
-      storageUrl = await getDownloadURL(snapshot.ref);
-      console.log('URL do Storage obtida:', storageUrl);
-      toast.success('Arquivo salvo permanentemente no servidor!');
+      const uploadTask = uploadBytesResumable(storageRef, blob);
+      
+      storageUrl = await new Promise<string | null>((resolve, reject) => {
+        uploadTask.on('state_changed', 
+          (snapshot) => {
+            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+            setProcessingMessage(`Enviando para o servidor: ${Math.round(progress)}%`);
+            console.log(`Progresso do upload: ${progress}%`);
+          },
+          (error) => {
+            console.error('Erro detalhado durante o upload:', error);
+            reject(error);
+          },
+          async () => {
+            console.log('Upload finalizado com sucesso. Obtendo URL pública...');
+            const url = await getDownloadURL(uploadTask.snapshot.ref);
+            resolve(url);
+          }
+        );
+      });
+
+      if (storageUrl) {
+        console.log('URL do Storage obtida com sucesso:', storageUrl);
+        toast.success('Arquivo salvo permanentemente no servidor!');
+      } else {
+        console.warn('Upload concluído mas URL retornou vazia.');
+      }
     } catch (storageErr: any) {
-      console.error('Erro detalhado no Storage:', storageErr);
+      console.error('Erro CRÍTICO no Storage:', storageErr);
       storageUrl = null;
       
       const errorCode = storageErr.code || 'unknown';
+      const errorMessage = storageErr.message || '';
+      
       if (errorCode === 'storage/unauthorized') {
-        toast.error('Erro de Permissão no Storage: O servidor recusou o arquivo. Verifique se o login do administrador está ativo.');
+        toast.error('Erro de Permissão: O servidor recusou o arquivo. Verifique se você está logado como administrador.');
       } else {
-        toast.warning(`Aviso: O arquivo não pôde ser salvo no servidor (${errorCode}). Ele funcionará apenas neste dispositivo.`);
+        toast.warning(`Aviso: O arquivo não pôde ser salvo no servidor (${errorCode}). Erro: ${errorMessage}`);
       }
     }
     
-    // URL local para uso imediato (análise e preview)
+    // URL local para uso imediato
     const localUrl = URL.createObjectURL(blob);
     setPdfUrl(localUrl);
     
@@ -1203,6 +1237,11 @@ export default function App() {
 
         if (isAdminUser) {
           try {
+            if (!storageUrl) {
+              console.warn('Tentando salvar no Firestore sem URL do Storage. O arquivo não será acessível por outros usuários.');
+              toast.warning('Atenção: O arquivo foi processado localmente, mas o link permanente falhou. Outros usuários não conseguirão baixar este arquivo.');
+            }
+
             const docId = currentDocType === 'BG' ? 'latest_bg' : 'latest_aditamento';
             console.log(`Salvando análise no Firestore (${docId}). URL do Storage:`, storageUrl);
             
@@ -1210,22 +1249,14 @@ export default function App() {
               fileName: currentFileName ? `${currentFileName} + ${name}` : name,
               results: newResults,
               fullText: newFullText,
-              pdfUrl: storageUrl, // Somente salva se for uma URL real do Storage (null se falhou)
+              pdfUrl: storageUrl,
               uploadedAt: new Date().toISOString(),
               uploadedBy: user?.displayName || loggedInOfficer?.name || 'Administrador',
               docType: currentDocType,
               bgNumber: uploadBgNumber,
               bgDate: uploadBgDate
             });
-            toast.success('Análise salva com sucesso no banco de dados!');
-          } catch (error) {
-            console.error('Erro ao salvar no Firestore:', error);
-            toast.error('O arquivo foi processado, mas não pôde ser salvo no banco de dados global.');
-          }
-        } else {
-          console.warn('Usuário não tem permissão de administrador para salvar globalmente.');
-          toast.info('Análise concluída localmente. (Apenas administradores podem salvar para todos os usuários)');
-        }
+            toast.success('Análise sincronizada com o banco de dados global!');
 
             // Log analysis save
             try {
@@ -1261,8 +1292,11 @@ export default function App() {
             }
           } catch (error) {
             console.error('Erro ao salvar análise:', error);
-            toast.error('O arquivo foi processado, mas não pôde ser salvo no banco de dados. Verifique suas permissões.');
+            toast.error('O arquivo foi processado, mas não pôde ser salvo no banco de dados global.');
           }
+        } else {
+          console.warn('Usuário não tem permissão de administrador para salvar globalmente.');
+          toast.info('Análise concluída localmente. (Apenas administradores podem salvar para todos os usuários)');
         }
       } else {
         if (currentDocType === 'BG') {
@@ -1281,6 +1315,11 @@ export default function App() {
 
         if (isAdminUser) {
           try {
+            if (!storageUrl) {
+              console.warn('Tentando salvar no Firestore sem URL do Storage. O arquivo não será acessível por outros usuários.');
+              toast.warning('Atenção: O arquivo foi processado localmente, mas o link permanente falhou. Outros usuários não conseguirão baixar este arquivo.');
+            }
+
             const docId = currentDocType === 'BG' ? 'latest_bg' : 'latest_aditamento';
             console.log(`Salvando análise no Firestore (${docId}). URL do Storage:`, storageUrl);
 
@@ -1288,22 +1327,14 @@ export default function App() {
               fileName: name,
               results: found,
               fullText: pagesText,
-              pdfUrl: storageUrl, // Somente salva se for uma URL real do Storage (null se falhou)
+              pdfUrl: storageUrl,
               uploadedAt: new Date().toISOString(),
               uploadedBy: user?.displayName || loggedInOfficer?.name || 'Administrador',
               docType: currentDocType,
               bgNumber: uploadBgNumber,
               bgDate: uploadBgDate
             });
-            toast.success('Análise salva com sucesso no banco de dados!');
-          } catch (error) {
-            console.error('Erro ao salvar no Firestore:', error);
-            toast.error('O arquivo foi processado, mas não pôde ser salvo no banco de dados global.');
-          }
-        } else {
-          console.warn('Usuário não tem permissão de administrador para salvar globalmente.');
-          toast.info('Análise concluída localmente. (Apenas administradores podem salvar para todos os usuários)');
-        }
+            toast.success('Análise sincronizada com o banco de dados global!');
 
             // Log analysis save
             try {
@@ -1339,8 +1370,11 @@ export default function App() {
             }
           } catch (error) {
             console.error('Erro ao salvar análise:', error);
-            toast.error('O arquivo foi processado, mas não pôde ser salvo no banco de dados. Verifique suas permissões.');
+            toast.error('O arquivo foi processado, mas não pôde ser salvo no banco de dados global.');
           }
+        } else {
+          console.warn('Usuário não tem permissão de administrador para salvar globalmente.');
+          toast.info('Análise concluída localmente. (Apenas administradores podem salvar para todos os usuários)');
         }
       }
       
