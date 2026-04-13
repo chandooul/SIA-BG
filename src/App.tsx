@@ -1265,6 +1265,10 @@ export default function App() {
             const docId = currentDocType === 'BG' ? 'latest_bg' : 'latest_aditamento';
             const isBlob = downloadUrl.startsWith('blob:');
             
+            if (isBlob) {
+              console.warn('Saving to Firestore with null pdfUrl because upload failed (blob detected)');
+            }
+
             await setDoc(doc(db, 'bg_analysis', docId), {
               fileName: currentFileName ? `${currentFileName} + ${name}` : name,
               results: newResults,
@@ -1331,6 +1335,10 @@ export default function App() {
           try {
             const docId = currentDocType === 'BG' ? 'latest_bg' : 'latest_aditamento';
             const isBlob = downloadUrl.startsWith('blob:');
+
+            if (isBlob) {
+              console.warn('Saving to Firestore with null pdfUrl because upload failed (blob detected)');
+            }
 
             await setDoc(doc(db, 'bg_analysis', docId), {
               fileName: name,

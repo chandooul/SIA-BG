@@ -9,7 +9,7 @@ service firebase.storage {
       allow write: if request.auth != null && 
                    (request.auth.token.email.lower() == "chandooul@gmail.com" || 
                     request.auth.token.email.lower() == "secretaria5bpmrn@gmail.com" ||
-                    firestore.exists(/databases/(default)/documents/authorized_admins/$(request.auth.token.email.lower())));
+                    firestore.exists(/databases/ai-studio-b6ea6f13-4814-4860-b01e-8fdbf28f2cb0/documents/authorized_admins/$(request.auth.token.email.lower())));
     }
   }
 }
