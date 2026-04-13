@@ -947,54 +947,28 @@ export default function App() {
     
     try {
       const storageRef = ref(storage, `bg_files/${sanitizedName}`);
-      console.log('Storage reference created:', storageRef.fullPath);
+      console.log('Tentando upload para:', storageRef.fullPath);
       
-      const uploadTask = uploadBytesResumable(storageRef, blob);
+      setProcessingMessage('Enviando arquivo para o servidor...');
+      const snapshot = await uploadBytes(storageRef, blob);
+      console.log('Upload concluído, obtendo URL...');
       
-      const uploadPromise = new Promise<string>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          uploadTask.cancel();
-          reject(new Error('timeout'));
-        }, 300000);
-
-        uploadTask.on('state_changed', 
-          (snapshot) => {
-            const percent = Math.round((snapshot.bytesTransferred / (snapshot.totalBytes || 1)) * 100);
-            setProgress(Math.round(10 + (percent * 0.3)));
-            setProcessingMessage(`Enviando para o servidor: ${percent}%`);
-          }, 
-          (error) => {
-            clearTimeout(timeout);
-            reject(error);
-          }, 
-          async () => {
-            clearTimeout(timeout);
-            try {
-              const url = await getDownloadURL(uploadTask.snapshot.ref);
-              resolve(url);
-            } catch (urlErr) {
-              reject(urlErr);
-            }
-          }
-        );
-      });
-
-      storageUrl = await uploadPromise;
-      console.log('PDF uploaded successfully to Storage:', storageUrl);
-      toast.success('Arquivo salvo permanentemente no servidor.');
+      storageUrl = await getDownloadURL(snapshot.ref);
+      console.log('URL do Storage obtida:', storageUrl);
+      toast.success('Arquivo salvo permanentemente no servidor!');
     } catch (storageErr: any) {
-      console.error('Storage Upload Error:', storageErr);
+      console.error('Erro detalhado no Storage:', storageErr);
       storageUrl = null;
       
       const errorCode = storageErr.code || 'unknown';
       if (errorCode === 'storage/unauthorized') {
-        toast.error('Erro de Permissão: O servidor de arquivos recusou o acesso. Verifique as regras de Storage.');
+        toast.error('Erro de Permissão no Storage: O servidor recusou o arquivo. Verifique se o login do administrador está ativo.');
       } else {
-        toast.warning('Aviso: O arquivo não pôde ser salvo no servidor. Ele funcionará apenas neste dispositivo.');
+        toast.warning(`Aviso: O arquivo não pôde ser salvo no servidor (${errorCode}). Ele funcionará apenas neste dispositivo.`);
       }
     }
     
-    // Always create a local URL for immediate use/preview
+    // URL local para uso imediato (análise e preview)
     const localUrl = URL.createObjectURL(blob);
     setPdfUrl(localUrl);
     
@@ -1224,15 +1198,19 @@ export default function App() {
         }
 
         // If admin, save to Firestore
-        if (isMasterAdmin(user?.email) || loggedInOfficer?.role === 'admin') {
+        const isAdminUser = isMasterAdmin(user?.email) || loggedInOfficer?.role === 'admin';
+        console.log('Verificando permissão para salvar no Firestore:', { isAdminUser, email: user?.email, role: loggedInOfficer?.role });
+
+        if (isAdminUser) {
           try {
             const docId = currentDocType === 'BG' ? 'latest_bg' : 'latest_aditamento';
+            console.log(`Salvando análise no Firestore (${docId}). URL do Storage:`, storageUrl);
             
             await setDoc(doc(db, 'bg_analysis', docId), {
               fileName: currentFileName ? `${currentFileName} + ${name}` : name,
               results: newResults,
               fullText: newFullText,
-              pdfUrl: storageUrl, // NEVER save localUrl (blob) to Firestore
+              pdfUrl: storageUrl, // Somente salva se for uma URL real do Storage (null se falhou)
               uploadedAt: new Date().toISOString(),
               uploadedBy: user?.displayName || loggedInOfficer?.name || 'Administrador',
               docType: currentDocType,
@@ -1240,6 +1218,14 @@ export default function App() {
               bgDate: uploadBgDate
             });
             toast.success('Análise salva com sucesso no banco de dados!');
+          } catch (error) {
+            console.error('Erro ao salvar no Firestore:', error);
+            toast.error('O arquivo foi processado, mas não pôde ser salvo no banco de dados global.');
+          }
+        } else {
+          console.warn('Usuário não tem permissão de administrador para salvar globalmente.');
+          toast.info('Análise concluída localmente. (Apenas administradores podem salvar para todos os usuários)');
+        }
 
             // Log analysis save
             try {
@@ -1290,15 +1276,19 @@ export default function App() {
         }
 
         // If admin, save to Firestore
-        if (isMasterAdmin(user?.email) || loggedInOfficer?.role === 'admin') {
+        const isAdminUser = isMasterAdmin(user?.email) || loggedInOfficer?.role === 'admin';
+        console.log('Verificando permissão para salvar no Firestore:', { isAdminUser, email: user?.email, role: loggedInOfficer?.role });
+
+        if (isAdminUser) {
           try {
             const docId = currentDocType === 'BG' ? 'latest_bg' : 'latest_aditamento';
+            console.log(`Salvando análise no Firestore (${docId}). URL do Storage:`, storageUrl);
 
             await setDoc(doc(db, 'bg_analysis', docId), {
               fileName: name,
               results: found,
               fullText: pagesText,
-              pdfUrl: storageUrl, // NEVER save localUrl (blob) to Firestore
+              pdfUrl: storageUrl, // Somente salva se for uma URL real do Storage (null se falhou)
               uploadedAt: new Date().toISOString(),
               uploadedBy: user?.displayName || loggedInOfficer?.name || 'Administrador',
               docType: currentDocType,
@@ -1306,6 +1296,14 @@ export default function App() {
               bgDate: uploadBgDate
             });
             toast.success('Análise salva com sucesso no banco de dados!');
+          } catch (error) {
+            console.error('Erro ao salvar no Firestore:', error);
+            toast.error('O arquivo foi processado, mas não pôde ser salvo no banco de dados global.');
+          }
+        } else {
+          console.warn('Usuário não tem permissão de administrador para salvar globalmente.');
+          toast.info('Análise concluída localmente. (Apenas administradores podem salvar para todos os usuários)');
+        }
 
             // Log analysis save
             try {
