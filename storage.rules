@@ -7,7 +7,8 @@ service firebase.storage {
       // Allow write access only to authenticated admins
       // Note: This matches the logic in firestore.rules
       allow write: if request.auth != null && 
-                   (request.auth.token.email == "chandooul@gmail.com" || 
+                   (request.auth.token.email.lower() == "chandooul@gmail.com" || 
+                    request.auth.token.email.lower() == "secretaria5bpmrn@gmail.com" ||
                     firestore.exists(/databases/(default)/documents/authorized_admins/$(request.auth.token.email.lower())));
     }
   }

@@ -239,11 +239,10 @@ export default function App() {
         setBgUploadedAt(data.uploadedAt || null);
         setBgNumber(data.bgNumber || '');
         setBgDate(data.bgDate || '');
-        console.log('Latest BG analysis loaded from Firestore');
+        console.log('Latest BG analysis loaded from Firestore:', data.pdfUrl);
       }
     }, (err) => {
-      console.error('Error fetching latest BG:', err);
-      handleFirestoreError(err, OperationType.GET, 'bg_analysis/latest_bg');
+      console.warn('Note: Latest BG analysis not found or access restricted:', err.message);
     });
 
     const unsubAditamento = onSnapshot(doc(db, 'bg_analysis', 'latest_aditamento'), (docSnap) => {
@@ -256,11 +255,10 @@ export default function App() {
         setAditamentoUploadedAt(data.uploadedAt || null);
         setAditamentoNumber(data.bgNumber || '');
         setAditamentoDate(data.bgDate || '');
-        console.log('Latest Aditamento analysis loaded from Firestore');
+        console.log('Latest Aditamento analysis loaded from Firestore:', data.pdfUrl);
       }
     }, (err) => {
-      console.error('Error fetching latest Aditamento:', err);
-      handleFirestoreError(err, OperationType.GET, 'bg_analysis/latest_aditamento');
+      console.warn('Note: Latest Aditamento analysis not found or access restricted:', err.message);
     });
 
     return () => {
@@ -1265,11 +1263,13 @@ export default function App() {
         if (isMasterAdmin(user?.email) || loggedInOfficer?.role === 'admin') {
           try {
             const docId = currentDocType === 'BG' ? 'latest_bg' : 'latest_aditamento';
+            const isBlob = downloadUrl.startsWith('blob:');
+            
             await setDoc(doc(db, 'bg_analysis', docId), {
               fileName: currentFileName ? `${currentFileName} + ${name}` : name,
               results: newResults,
               fullText: newFullText,
-              pdfUrl: downloadUrl,
+              pdfUrl: isBlob ? null : downloadUrl,
               uploadedAt: new Date().toISOString(),
               uploadedBy: user?.displayName || loggedInOfficer?.name || 'Administrador',
               docType: currentDocType,
@@ -1330,11 +1330,13 @@ export default function App() {
         if (isMasterAdmin(user?.email) || loggedInOfficer?.role === 'admin') {
           try {
             const docId = currentDocType === 'BG' ? 'latest_bg' : 'latest_aditamento';
+            const isBlob = downloadUrl.startsWith('blob:');
+
             await setDoc(doc(db, 'bg_analysis', docId), {
               fileName: name,
               results: found,
               fullText: pagesText,
-              pdfUrl: downloadUrl,
+              pdfUrl: isBlob ? null : downloadUrl,
               uploadedAt: new Date().toISOString(),
               uploadedBy: user?.displayName || loggedInOfficer?.name || 'Administrador',
               docType: currentDocType,
@@ -1679,22 +1681,26 @@ export default function App() {
         <div className="flex flex-col md:flex-row justify-between mb-8 items-start md:items-center gap-4 md:gap-6">
           <div className="flex flex-wrap gap-3">
             {bgPdfUrl && (
-              <button 
-                onClick={() => window.open(bgPdfUrl, '_blank')}
-                className="flex items-center gap-2 px-4 py-2 bg-white border border-[#5A5A40]/10 rounded-full text-[#5A5A40] hover:bg-[#f5f5f0] transition-all shadow-sm group text-xs"
+              <a 
+                href={bgPdfUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 px-4 py-2 bg-white border border-[#5A5A40]/10 rounded-full text-[#5A5A40] hover:bg-[#f5f5f0] transition-all shadow-sm group text-xs no-underline"
               >
                 <FileText className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
                 <span className="font-bold uppercase tracking-widest">BG DO DIA</span>
-              </button>
+              </a>
             )}
             {aditamentoPdfUrl && (
-              <button 
-                onClick={() => window.open(aditamentoPdfUrl, '_blank')}
-                className="flex items-center gap-2 px-4 py-2 bg-white border border-[#5A5A40]/10 rounded-full text-[#5A5A40] hover:bg-[#f5f5f0] transition-all shadow-sm group text-xs"
+              <a 
+                href={aditamentoPdfUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 px-4 py-2 bg-white border border-[#5A5A40]/10 rounded-full text-[#5A5A40] hover:bg-[#f5f5f0] transition-all shadow-sm group text-xs no-underline"
               >
                 <FileText className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
                 <span className="font-bold uppercase tracking-widest">ADITAMENTO</span>
-              </button>
+              </a>
             )}
           </div>
           <div className="flex items-center gap-3 bg-white px-4 py-2 rounded-full border border-black/5 shadow-sm">
@@ -2018,12 +2024,14 @@ export default function App() {
                       </div>
                     </div>
                     {((detailView.docType === 'BG' && bgPdfUrl) || (detailView.docType === 'ADITAMENTO' && aditamentoPdfUrl)) && (
-                      <button 
-                        onClick={() => window.open(detailView.docType === 'BG' ? bgPdfUrl! : aditamentoPdfUrl!, '_blank')}
-                        className="hidden md:flex items-center gap-2 px-6 py-3 bg-white rounded-2xl border border-black/5 text-xs font-bold uppercase tracking-widest text-[#5A5A40] hover:bg-[#f5f5f0] transition-all"
+                      <a 
+                        href={detailView.docType === 'BG' ? bgPdfUrl! : aditamentoPdfUrl!}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="hidden md:flex items-center gap-2 px-6 py-3 bg-white rounded-2xl border border-black/5 text-xs font-bold uppercase tracking-widest text-[#5A5A40] hover:bg-[#f5f5f0] transition-all no-underline"
                       >
                         <ExternalLink className="w-4 h-4" /> Ver PDF Original
-                      </button>
+                      </a>
                     )}
                   </header>
 
