@@ -77,8 +77,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-// PDF.js worker setup - using local worker bundled by Vite for maximum reliability
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+// PDF.js worker setup - using reliable CDN with .mjs for version 5.x compatibility
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -633,6 +633,28 @@ export default function App() {
     }
   };
 
+  const exportToCSV = (data: any[], fileName: string) => {
+    if (data.length === 0) return;
+    
+    const headers = Object.keys(data[0]).join(',');
+    const rows = data.map(obj => 
+      Object.values(obj).map(val => 
+        typeof val === 'string' ? `"${val.replace(/"/g, '""')}"` : val
+      ).join(',')
+    ).join('\n');
+    
+    const csvContent = `${headers}\n${rows}`;
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `${fileName}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const handleBulkUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -714,17 +736,27 @@ export default function App() {
       .toLowerCase()
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "") // Remove accents
-      .replace(/[º°ª\.]/g, "")         // Remove ordinal/degree/dots
-      .replace(/\s+/g, '')            // Remove ALL whitespace
-      .trim();
+      .replace(/[^a-z0-9]/g, "")       // Remove EVERYTHING except letters and numbers
+      .replace(/z/g, "s");             // Normalize 'z' to 's' for names like Luiz/Luis
   };
 
   const getRegistrationVariations = (reg: string) => {
     const nums = reg.replace(/\D/g, '');
     if (!nums) return [reg.toLowerCase()];
     const variations = new Set([reg.toLowerCase(), nums]);
+    
+    // Common formats: 123.456-7, 123456-7, 123.456.7
     if (nums.length >= 6) {
-      variations.add(`${nums.substring(0, nums.length - 1)}-${nums.substring(nums.length - 1)}`);
+      const last = nums.substring(nums.length - 1);
+      const rest = nums.substring(0, nums.length - 1);
+      variations.add(`${rest}-${last}`);
+      
+      if (rest.length >= 3) {
+        const firstPart = rest.substring(0, rest.length - 3);
+        const secondPart = rest.substring(rest.length - 3);
+        variations.add(`${firstPart}.${secondPart}-${last}`);
+        variations.add(`${firstPart}.${secondPart}.${last}`);
+      }
     }
     return Array.from(variations);
   };
@@ -962,35 +994,44 @@ export default function App() {
       setProcessingMessage('Enviando arquivo para o servidor seguro (isso pode levar alguns segundos)...');
       setProgress(20);
       
-      // Tentar upload direto (uploadBytes) que é mais robusto em alguns ambientes de iframe
-      console.log('Iniciando upload direto com uploadBytes...');
-      const uploadResult = await uploadBytes(storageRef, blob);
-      console.log('Upload direto concluído:', uploadResult);
-      
-      setProgress(35);
-      storageUrl = await getDownloadURL(uploadResult.ref);
-      setProgress(40);
+      try {
+        if (!user && !loggedInOfficer) {
+          throw new Error('Usuário não autenticado. Por favor, faça login novamente.');
+        }
 
-      if (storageUrl) {
-        console.log('URL do Storage obtida com sucesso:', storageUrl);
-        toast.success('Arquivo salvo permanentemente no servidor!');
-      } else {
-        console.warn('Upload concluído mas URL retornou vazia.');
+        console.log('Iniciando upload via API do servidor...');
+        const formData = new FormData();
+        formData.append('file', blob, name);
+
+        const response = await fetch('/api/upload', {
+          method: 'POST',
+          body: formData
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || `Erro no servidor: ${response.status}`);
+        }
+
+        const uploadResult = await response.json();
+        console.log('Upload via API concluído:', uploadResult);
+        
+        setProgress(35);
+        storageUrl = uploadResult.url;
+        setProgress(40);
+
+        if (storageUrl) {
+          console.log('URL do Storage obtida com sucesso via API:', storageUrl);
+          toast.success('Arquivo salvo permanentemente no servidor!');
+        }
+      } catch (apiErr: any) {
+        console.error('Erro no upload via API:', apiErr);
+        storageUrl = null;
+        toast.warning(`Aviso: O envio para o servidor falhou (${apiErr.message}). Tentando processar localmente...`);
       }
     } catch (storageErr: any) {
-      console.error('Erro detalhado no Storage:', storageErr);
+      console.error('Erro inesperado no fluxo de upload:', storageErr);
       storageUrl = null;
-      
-      const errorCode = storageErr.code || 'unknown';
-      const errorMessage = storageErr.message || '';
-      
-      if (errorCode === 'storage/unauthorized') {
-        toast.error('Erro de Permissão: O servidor recusou o arquivo. Verifique se você está logado como administrador.');
-      } else if (errorCode === 'storage/retry-limit-exceeded') {
-        toast.error('Erro de Conexão: O upload demorou muito. Verifique sua internet.');
-      } else {
-        toast.warning(`Aviso: O arquivo não pôde ser salvo no servidor (${errorCode}). Erro: ${errorMessage}`);
-      }
     }
     
     // URL local para uso imediato
@@ -1040,25 +1081,61 @@ export default function App() {
             const regVariations = getRegistrationVariations(off.registration).map(v => normalizeText(v));
             const regFuzzy = normalizeTextFuzzy(off.registration);
 
-            const nameMatch = (nameNormalized && textNormalized.includes(nameNormalized)) || 
-                             (nameFuzzy.length > 5 && textFuzzy.includes(nameFuzzy));
-            const regMatch = regVariations.find(v => textNormalized.includes(v)) || 
-                            (regFuzzy.length > 4 && textFuzzy.includes(regFuzzy) ? regFuzzy : undefined);
+            const matchesOnPage: IdentificationResult[] = [];
 
-            if (nameMatch || regMatch) {
-              const matchStr = nameMatch ? nameNormalized : (typeof regMatch === 'string' ? regMatch : normalizeText(off.registration));
-              const index = textNormalized.indexOf(matchStr);
-              const start = Math.max(0, index - 60);
-              const end = Math.min(text.length, index + matchStr.length + 80);
-              const context = text.substring(start, end).replace(/\s+/g, ' ').trim();
+            // Check Name Match
+            if (nameNormalized) {
+              let lastIndex = -1;
+              while ((lastIndex = textNormalized.indexOf(nameNormalized, lastIndex + 1)) !== -1) {
+                const start = Math.max(0, lastIndex - 60);
+                const end = Math.min(text.length, lastIndex + nameNormalized.length + 80);
+                const context = text.substring(start, end).replace(/\s+/g, ' ').trim();
+                matchesOnPage.push({
+                  type: 'officer',
+                  match: `${off.name} (${off.registration})${off.unit ? ` - ${off.unit}` : ''}`,
+                  context: context ? `...${context}...` : 'Identificado pelo nome.',
+                  page: i,
+                  metadata: off
+                });
+              }
+            }
+
+            // Check Registration Match (if not already found at same positions, or just add them)
+            regVariations.forEach(v => {
+              let lastIndex = -1;
+              while ((lastIndex = textNormalized.indexOf(v, lastIndex + 1)) !== -1) {
+                // Avoid adding duplicate context if name and reg are together
+                if (!matchesOnPage.some(m => Math.abs(m.context.indexOf(v)) < 100 && m.page === i)) {
+                  const start = Math.max(0, lastIndex - 60);
+                  const end = Math.min(text.length, lastIndex + v.length + 80);
+                  const context = text.substring(start, end).replace(/\s+/g, ' ').trim();
+                  matchesOnPage.push({
+                    type: 'officer',
+                    match: `${off.name} (${off.registration})${off.unit ? ` - ${off.unit}` : ''}`,
+                    context: context ? `...${context}...` : 'Identificado pela matrícula.',
+                    page: i,
+                    metadata: off
+                  });
+                }
+              }
+            });
+
+            // Fuzzy matches as fallback if no exact matches found
+            if (matchesOnPage.length === 0) {
+              const nameFuzzyMatch = nameFuzzy.length > 5 && textFuzzy.includes(nameFuzzy);
+              const regFuzzyMatch = regFuzzy.length > 4 && textFuzzy.includes(regFuzzy);
               
-              found.push({
-                type: 'officer',
-                match: `${off.name} (${off.registration})`,
-                context: context ? `...${context}...` : 'Identificado no texto.',
-                page: i,
-                metadata: off
-              });
+              if (nameFuzzyMatch || regFuzzyMatch) {
+                found.push({
+                  type: 'officer',
+                  match: `${off.name} (${off.registration})${off.unit ? ` - ${off.unit}` : ''}`,
+                  context: 'Identificado via busca aproximada (Fuzzy).',
+                  page: i,
+                  metadata: off
+                });
+              }
+            } else {
+              found.push(...matchesOnPage);
             }
           });
 
@@ -1666,26 +1743,46 @@ export default function App() {
         <div className="flex flex-col md:flex-row justify-between mb-8 items-start md:items-center gap-4 md:gap-6">
           <div className="flex flex-wrap gap-3">
             {bgPdfUrl && (
-              <a 
-                href={bgPdfUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 px-4 py-2 bg-white border border-[#5A5A40]/10 rounded-full text-[#5A5A40] hover:bg-[#f5f5f0] transition-all shadow-sm group text-xs no-underline"
-              >
-                <FileText className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
-                <span className="font-bold uppercase tracking-widest">BG DO DIA</span>
-              </a>
+              <div className="flex items-center gap-2">
+                <a 
+                  href={bgPdfUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 px-4 py-2 bg-white border border-[#5A5A40]/10 rounded-full text-[#5A5A40] hover:bg-[#f5f5f0] transition-all shadow-sm group text-xs no-underline"
+                >
+                  <FileText className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
+                  <span className="font-bold uppercase tracking-widest">BG DO DIA</span>
+                </a>
+                <a 
+                  href={bgPdfUrl}
+                  download={`BG_${bgNumber || 'Documento'}.pdf`}
+                  className="flex items-center justify-center w-9 h-9 bg-white border border-[#5A5A40]/10 rounded-full text-[#5A5A40] hover:bg-[#5A5A40] hover:text-white transition-all shadow-sm group"
+                  title="Baixar PDF"
+                >
+                  <Download className="w-4 h-4" />
+                </a>
+              </div>
             )}
             {aditamentoPdfUrl && (
-              <a 
-                href={aditamentoPdfUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 px-4 py-2 bg-white border border-[#5A5A40]/10 rounded-full text-[#5A5A40] hover:bg-[#f5f5f0] transition-all shadow-sm group text-xs no-underline"
-              >
-                <FileText className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
-                <span className="font-bold uppercase tracking-widest">ADITAMENTO</span>
-              </a>
+              <div className="flex items-center gap-2">
+                <a 
+                  href={aditamentoPdfUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 px-4 py-2 bg-white border border-[#5A5A40]/10 rounded-full text-[#5A5A40] hover:bg-[#f5f5f0] transition-all shadow-sm group text-xs no-underline"
+                >
+                  <FileText className="w-3.5 h-3.5 group-hover:scale-110 transition-transform" />
+                  <span className="font-bold uppercase tracking-widest">ADITAMENTO</span>
+                </a>
+                <a 
+                  href={aditamentoPdfUrl}
+                  download={`ADITAMENTO_${aditamentoNumber || 'Documento'}.pdf`}
+                  className="flex items-center justify-center w-9 h-9 bg-white border border-[#5A5A40]/10 rounded-full text-[#5A5A40] hover:bg-[#5A5A40] hover:text-white transition-all shadow-sm group"
+                  title="Baixar PDF"
+                >
+                  <Download className="w-4 h-4" />
+                </a>
+              </div>
             )}
           </div>
           <div className="flex items-center gap-3 bg-white px-4 py-2 rounded-full border border-black/5 shadow-sm">
@@ -2009,14 +2106,43 @@ export default function App() {
                       </div>
                     </div>
                     {((detailView.docType === 'BG' && bgPdfUrl) || (detailView.docType === 'ADITAMENTO' && aditamentoPdfUrl)) && (
-                      <a 
-                        href={detailView.docType === 'BG' ? bgPdfUrl! : aditamentoPdfUrl!}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="hidden md:flex items-center gap-2 px-6 py-3 bg-white rounded-2xl border border-black/5 text-xs font-bold uppercase tracking-widest text-[#5A5A40] hover:bg-[#f5f5f0] transition-all no-underline"
-                      >
-                        <ExternalLink className="w-4 h-4" /> Ver PDF Original
-                      </a>
+                      <div className="flex items-center gap-3">
+                        <a 
+                          href={detailView.docType === 'BG' ? bgPdfUrl! : aditamentoPdfUrl!}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hidden md:flex items-center gap-2 px-6 py-3 bg-white rounded-2xl border border-black/5 text-xs font-bold uppercase tracking-widest text-[#5A5A40] hover:bg-[#f5f5f0] transition-all no-underline"
+                        >
+                          <ExternalLink className="w-4 h-4" /> Ver PDF Original
+                        </a>
+                        <a 
+                          href={detailView.docType === 'BG' ? bgPdfUrl! : aditamentoPdfUrl!}
+                          download={`${detailView.docType}_${detailView.docType === 'BG' ? bgNumber : aditamentoNumber}.pdf`}
+                          className="flex items-center gap-2 px-6 py-3 bg-[#5A5A40] text-white rounded-2xl shadow-lg shadow-[#5A5A40]/20 hover:bg-[#4a4a35] transition-all no-underline text-xs font-bold uppercase tracking-widest"
+                        >
+                          <Download className="w-4 h-4" /> Download PDF
+                        </a>
+                        <button 
+                          onClick={() => {
+                            const results = detailView.docType === 'BG' ? bgResults : aditamentoResults;
+                            const filtered = results.filter(res => {
+                              if (detailView.category === 'officer') return res.type === 'officer';
+                              if (detailView.category === 'unit') return res.type === 'unit';
+                              if (detailView.category === 'term') return res.type === 'term';
+                              return true;
+                            });
+                            exportToCSV(filtered.map(r => ({
+                              Tipo: r.type,
+                              Identificação: r.match,
+                              Página: r.page,
+                              Contexto: r.context
+                            })), `Resultados_${detailView.docType}_${detailView.category}`);
+                          }}
+                          className="flex items-center gap-2 px-6 py-3 bg-white border border-[#5A5A40]/20 text-[#5A5A40] rounded-2xl hover:bg-[#f5f5f0] transition-all text-xs font-bold uppercase tracking-widest"
+                        >
+                          <FileSpreadsheet className="w-4 h-4" /> Exportar CSV
+                        </button>
+                      </div>
                     )}
                   </header>
 
@@ -2274,25 +2400,38 @@ export default function App() {
               <div className="bg-white rounded-[32px] md:rounded-[40px] p-6 md:p-10 border border-black/5 shadow-sm space-y-8">
                 {dbTab === 'officers' && (
                   <div className="space-y-8">
-                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-black/5">
-                      <h3 className="text-xl font-serif">Adicionar Policial</h3>
-                      <div className="relative w-full md:w-auto">
-                        <input 
-                          type="file" 
-                          accept=".xlsx, .xls, .csv" 
-                          onChange={handleBulkUpload}
-                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                          disabled={isBulkUploading}
-                        />
-                        <button 
-                          disabled={isBulkUploading}
-                          className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-[#f5f5f0] text-[#5A5A40] rounded-full hover:bg-[#e5e5e0] transition-colors font-bold text-sm"
-                        >
-                          {isBulkUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileSpreadsheet className="w-4 h-4" />}
-                          Importar Planilha
-                        </button>
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-black/5">
+                        <h3 className="text-xl font-serif">Adicionar Policial</h3>
+                        <div className="flex items-center gap-3">
+                          <button 
+                            onClick={() => exportToCSV(officers.map(o => ({
+                              Nome: o.name,
+                              Matricula: o.registration,
+                              Unidade: o.unit,
+                              Acesso: o.role
+                            })), 'Lista_Policiais')}
+                            className="flex items-center justify-center gap-2 px-6 py-3 bg-white border border-[#5A5A40]/10 text-[#5A5A40] rounded-full hover:bg-[#f5f5f0] transition-colors font-bold text-sm"
+                          >
+                            <Download className="w-4 h-4" /> Exportar Lista
+                          </button>
+                          <div className="relative w-full md:w-auto">
+                            <input 
+                              type="file" 
+                              accept=".xlsx, .xls, .csv" 
+                              onChange={handleBulkUpload}
+                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                              disabled={isBulkUploading}
+                            />
+                            <button 
+                              disabled={isBulkUploading}
+                              className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-[#f5f5f0] text-[#5A5A40] rounded-full hover:bg-[#e5e5e0] transition-colors font-bold text-sm"
+                            >
+                              {isBulkUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileSpreadsheet className="w-4 h-4" />}
+                              Importar Planilha
+                            </button>
+                          </div>
+                        </div>
                       </div>
-                    </div>
                     <form onSubmit={addOfficer} className="grid grid-cols-1 md:grid-cols-5 gap-6 items-end">
                       <div className="space-y-2">
                         <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Nome Completo</label>
@@ -2344,7 +2483,20 @@ export default function App() {
                 )}
 
                 {dbTab === 'units' && (
-                  <form onSubmit={addUnit} className="grid grid-cols-1 md:grid-cols-3 gap-6 items-end">
+                  <div className="space-y-8">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-black/5">
+                      <h3 className="text-xl font-serif">Adicionar Unidade</h3>
+                      <button 
+                        onClick={() => exportToCSV(units.map(u => ({
+                          Nome: u.name,
+                          Sigla: u.acronym
+                        })), 'Lista_Unidades')}
+                        className="flex items-center justify-center gap-2 px-6 py-3 bg-white border border-[#5A5A40]/10 text-[#5A5A40] rounded-full hover:bg-[#f5f5f0] transition-colors font-bold text-sm"
+                      >
+                        <Download className="w-4 h-4" /> Exportar Lista
+                      </button>
+                    </div>
+                    <form onSubmit={addUnit} className="grid grid-cols-1 md:grid-cols-3 gap-6 items-end">
                     <div className="space-y-2">
                       <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Nome da Unidade</label>
                       <input 
@@ -2369,10 +2521,24 @@ export default function App() {
                       Adicionar
                     </button>
                   </form>
-                )}
+                </div>
+              )}
 
                 {dbTab === 'terms' && (
-                  <form onSubmit={addTerm} className="grid grid-cols-1 md:grid-cols-3 gap-6 items-end">
+                  <div className="space-y-8">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-black/5">
+                      <h3 className="text-xl font-serif">Adicionar Termo</h3>
+                      <button 
+                        onClick={() => exportToCSV(searchTerms.map(t => ({
+                          Termo: t.term,
+                          Categoria: t.category
+                        })), 'Lista_Termos')}
+                        className="flex items-center justify-center gap-2 px-6 py-3 bg-white border border-[#5A5A40]/10 text-[#5A5A40] rounded-full hover:bg-[#f5f5f0] transition-colors font-bold text-sm"
+                      >
+                        <Download className="w-4 h-4" /> Exportar Lista
+                      </button>
+                    </div>
+                    <form onSubmit={addTerm} className="grid grid-cols-1 md:grid-cols-3 gap-6 items-end">
                     <div className="space-y-2">
                       <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Termo de Pesquisa</label>
                       <input 
@@ -2397,7 +2563,8 @@ export default function App() {
                       Adicionar
                     </button>
                   </form>
-                )}
+                </div>
+              )}
 
                 {dbTab === 'admins' && (
                   <div className="space-y-8">

@@ -59,20 +59,6 @@ service cloud.firestore {
              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.officerId == officerId;
     }
 
-    function hasRequiredFields(fields) {
-      return request.resource.data.keys().hasAll(fields);
-    }
-
-    function isValidOfficer(data) {
-      return data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
-             data.registration is string && data.registration.size() > 0 && data.registration.size() < 50 &&
-             data.unit is string && data.unit.size() > 0 && data.unit.size() < 200 &&
-             (!('password' in data) || (data.password is string && data.password.size() < 100)) &&
-             (!('keywords' in data) || (data.keywords is list && data.keywords.size() < 50)) &&
-             (!('email' in data) || (data.email is string && data.email.size() < 100)) &&
-             (!('phone' in data) || (data.phone is string && data.phone.size() < 50));
-    }
-
     function isValidUnit(data) {
       return data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
              (!('acronym' in data) || (data.acronym is string && data.acronym.size() < 50));
@@ -83,27 +69,15 @@ service cloud.firestore {
              (!('category' in data) || (data.category is string && data.category.size() < 100));
     }
 
-    function isValidBGAnalysis(data) {
-      return data.fileName is string && data.fileName.size() > 0 &&
-             data.uploadedAt is string && data.uploadedAt.size() > 0 &&
-             data.results is list &&
-             (!('pdfUrl' in data) || data.pdfUrl is string) &&
-             (!('uploadedBy' in data) || data.uploadedBy is string) &&
-             (!('bgNumber' in data) || data.bgNumber is string) &&
-             (!('bgDate' in data) || data.bgDate is string) &&
-             (!('docType' in data) || data.docType is string) &&
-             (!('fullText' in data) || data.fullText is list);
-    }
-
     // Rules for BG Analysis - ensure public read access
-    match /bg_analysis/latest {
-      allow read: if true;
-      allow write: if isAdmin() && (request.resource.data == null || isValidBGAnalysis(request.resource.data));
-    }
-
     match /bg_analysis/{bgId} {
       allow read: if true;
-      allow write: if isAdmin() && (request.resource.data == null || isValidBGAnalysis(request.resource.data));
+      allow write: if isAdmin();
+    }
+
+    match /system_logs/{logId} {
+      allow create: if true;
+      allow read: if isAdmin();
     }
 
     match /users/{userId} {
