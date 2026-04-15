@@ -1293,10 +1293,16 @@ export default function App() {
           setBgResults(newResults);
           setBgFullText(newFullText);
           setBgPdfUrl(storageUrl || localUrl);
+          setBgFileName(currentFileName ? `${currentFileName} + ${name}` : name);
+          setBgNumber(uploadBgNumber);
+          setBgDate(uploadBgDate);
         } else {
           setAditamentoResults(newResults);
           setAditamentoFullText(newFullText);
           setAditamentoPdfUrl(storageUrl || localUrl);
+          setAditamentoFileName(currentFileName ? `${currentFileName} + ${name}` : name);
+          setAditamentoNumber(uploadBgNumber);
+          setAditamentoDate(uploadBgDate);
         }
 
         // If admin, save to Firestore
@@ -1371,10 +1377,16 @@ export default function App() {
           setBgResults(found);
           setBgFullText(pagesText);
           setBgPdfUrl(storageUrl || localUrl);
+          setBgFileName(name);
+          setBgNumber(uploadBgNumber);
+          setBgDate(uploadBgDate);
         } else {
           setAditamentoResults(found);
           setAditamentoFullText(pagesText);
           setAditamentoPdfUrl(storageUrl || localUrl);
+          setAditamentoFileName(name);
+          setAditamentoNumber(uploadBgNumber);
+          setAditamentoDate(uploadBgDate);
         }
 
         // If admin, save to Firestore
