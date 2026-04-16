@@ -91,6 +91,13 @@ async function startServer() {
     }
 
     app.use(express.json({ limit: '50mb' }));
+    app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+    // Logging middleware for API
+    app.use('/api', (req, res, next) => {
+      console.log(`[API] ${req.method} ${req.path}`);
+      next();
+    });
 
     // Initialize Firestore with the specific database ID from config
     console.log(`Usando Database ID: ${databaseId} e Bucket: ${bucketName}`);
@@ -105,7 +112,10 @@ async function startServer() {
       console.error("Erro ao conectar ao Firestore:", dbErr);
     }
 
-    const upload = multer({ dest: 'uploads/' });
+    const upload = multer({ 
+      dest: 'uploads/',
+      limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
+    });
 
   // API Route for file upload to Firebase Storage
   app.post("/api/upload", upload.single('file'), async (req: any, res: any) => {
@@ -397,6 +407,30 @@ async function startServer() {
   }
   app.use('/uploads', express.static(uploadsDir));
 
+  // API 404 handler - Catch unknown /api routes before SPA fallback
+  app.all('/api/*', (req, res) => {
+    console.warn(`[API 404] ${req.method} ${req.path}`);
+    res.status(404).json({ 
+      error: `Rota ${req.method} ${req.path} não encontrada`,
+      success: false 
+    });
+  });
+
+  // Global error handler for API routes
+  app.use((err: any, req: any, res: any, next: any) => {
+    const isApiRequest = req.path.startsWith('/api') || req.originalUrl?.startsWith('/api');
+    
+    if (isApiRequest) {
+      console.error('API Error:', err);
+      return res.status(err.status || 500).json({ 
+        success: false,
+        error: err.message || 'Internal Server Error',
+        details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+      });
+    }
+    next(err);
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -415,19 +449,7 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
-
-  // Global error handler for API routes
-  app.use((err: any, req: any, res: any, next: any) => {
-    if (req.path.startsWith('/api')) {
-      console.error('API Error:', err);
-      return res.status(err.status || 500).json({ 
-        error: err.message || 'Internal Server Error',
-        details: process.env.NODE_ENV === 'development' ? err.stack : undefined
-      });
-    }
-    next(err);
-  });
-  } catch (err) {
+} catch (err) {
     console.error("FATAL SERVER ERROR:", err);
     // Even if there's an error, we want to try and listen so the proxy doesn't time out
     // and we can potentially see the error in logs

@@ -916,6 +916,31 @@ export default function App() {
     setUserSpecificResults(uniqueResults);
   }, [bgResults, aditamentoResults, bgFullText, aditamentoFullText, loggedInOfficer?.keywords, loggedInOfficer?.registration, loggedInOfficer?.name, loggedInOfficer?.unit]);
 
+  // Helper for safe API calls
+  const fetchJson = async (url: string, options: RequestInit) => {
+    const response = await fetch(url, options);
+    const contentType = response.headers.get('content-type');
+    
+    if (contentType && contentType.includes('application/json')) {
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || `Erro ${response.status}: ${response.statusText}`);
+      }
+      return data;
+    } else {
+      const text = await response.text();
+      if (!response.ok) {
+        // If it's HTML, it's likely a server error page or SPA fallback
+        if (text.includes('<!doctype html>') || text.includes('<html>')) {
+          throw new Error(`O servidor retornou uma página HTML em vez de JSON (Status ${response.status}). Isso geralmente indica um erro de rota ou falha catastrófica no servidor.`);
+        }
+        throw new Error(`Erro ${response.status}: ${text || response.statusText}`);
+      }
+      // Success but not JSON? Unexpected for our API
+      throw new Error('O servidor retornou uma resposta bem-sucedida, mas o formato não é JSON.');
+    }
+  };
+
   const processPDF = async (data: ArrayBuffer, name: string, append = false) => {
     console.log('Starting PDF processing for:', name);
     
@@ -1003,17 +1028,11 @@ export default function App() {
         const formData = new FormData();
         formData.append('file', blob, name);
 
-        const response = await fetch('/api/upload', {
+        const uploadResult = await fetchJson('/api/upload', {
           method: 'POST',
           body: formData
         });
 
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || `Erro no servidor: ${response.status}`);
-        }
-
-        const uploadResult = await response.json();
         console.log('Upload via API concluído:', uploadResult);
         
         setProgress(35);
@@ -1345,7 +1364,7 @@ export default function App() {
             // Trigger email notifications
             try {
               setProcessingMessage('Enviando notificações por e-mail...');
-              const response = await fetch('/api/notify', {
+              const data = await fetchJson('/api/notify', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1357,12 +1376,13 @@ export default function App() {
                   }
                 })
               });
-              const data = await response.json();
+              
               if (data.success && data.notifiedCount > 0) {
                 toast.success(`${data.notifiedCount} policiais notificados por e-mail.`);
               }
-            } catch (notifyError) {
+            } catch (notifyError: any) {
               console.error('Erro ao enviar notificações:', notifyError);
+              // Don't toast error here to not distract from successful upload
             }
           } catch (error) {
             console.error('Erro ao salvar análise:', error);
