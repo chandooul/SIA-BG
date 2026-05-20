@@ -125,6 +125,29 @@ interface IdentificationResult {
   metadata?: any;
 }
 
+// Helper for safe API calls
+async function fetchJson(url: string, options?: RequestInit) {
+  const response = await fetch(url, options);
+  const contentType = response.headers.get('content-type');
+  
+  if (contentType && contentType.includes('application/json')) {
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || `Erro ${response.status}: ${response.statusText}`);
+    }
+    return data;
+  } else {
+    const text = await response.text();
+    if (!response.ok) {
+      if (text.includes('<!doctype html>') || text.includes('<html>')) {
+        throw new Error(`O servidor retornou uma página HTML em vez de JSON (Status ${response.status}). Isso geralmente indica um erro de rota ou falha catastrófica no servidor.`);
+      }
+      throw new Error(`Erro ${response.status}: ${text || response.statusText}`);
+    }
+    throw new Error('O servidor retornou uma resposta bem-sucedida, mas o formato não é JSON.');
+  }
+}
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loggedInOfficer, setLoggedInOfficer] = useState<Officer | null>(null);
@@ -596,13 +619,12 @@ export default function App() {
     
     const toastId = toast.loading('Enviando e-mail de teste...');
     try {
-      const response = await fetch('/api/test-email', {
+      const data = await fetchJson('/api/test-email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: user.email })
       });
       
-      const data = await response.json();
       if (data.success) {
         toast.success('E-mail de teste enviado com sucesso! Verifique sua caixa de entrada.', { id: toastId });
       } else {
@@ -617,17 +639,16 @@ export default function App() {
   const fetchLogs = async () => {
     setIsLoadingLogs(true);
     try {
-      const response = await fetch('/api/logs');
-      const data = await response.json();
+      const data = await fetchJson('/api/logs');
       if (data.success) {
         setSystemLogs(data.logs);
         setShowLogs(true);
       } else {
         toast.error('Erro ao buscar logs.');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Fetch Logs Error:', err);
-      toast.error('Erro de conexão ao buscar logs.');
+      toast.error(`Erro de conexão ao buscar logs: ${err.message}`);
     } finally {
       setIsLoadingLogs(false);
     }
@@ -915,31 +936,6 @@ export default function App() {
 
     setUserSpecificResults(uniqueResults);
   }, [bgResults, aditamentoResults, bgFullText, aditamentoFullText, loggedInOfficer?.keywords, loggedInOfficer?.registration, loggedInOfficer?.name, loggedInOfficer?.unit]);
-
-  // Helper for safe API calls
-  const fetchJson = async (url: string, options: RequestInit) => {
-    const response = await fetch(url, options);
-    const contentType = response.headers.get('content-type');
-    
-    if (contentType && contentType.includes('application/json')) {
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || `Erro ${response.status}: ${response.statusText}`);
-      }
-      return data;
-    } else {
-      const text = await response.text();
-      if (!response.ok) {
-        // If it's HTML, it's likely a server error page or SPA fallback
-        if (text.includes('<!doctype html>') || text.includes('<html>')) {
-          throw new Error(`O servidor retornou uma página HTML em vez de JSON (Status ${response.status}). Isso geralmente indica um erro de rota ou falha catastrófica no servidor.`);
-        }
-        throw new Error(`Erro ${response.status}: ${text || response.statusText}`);
-      }
-      // Success but not JSON? Unexpected for our API
-      throw new Error('O servidor retornou uma resposta bem-sucedida, mas o formato não é JSON.');
-    }
-  };
 
   const processPDF = async (data: ArrayBuffer, name: string, append = false) => {
     console.log('Starting PDF processing for:', name);
@@ -1449,7 +1445,7 @@ export default function App() {
             // Trigger email notifications
             try {
               setProcessingMessage('Enviando notificações por e-mail...');
-              const response = await fetch('/api/notify', {
+              const data = await fetchJson('/api/notify', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1461,12 +1457,12 @@ export default function App() {
                   }
                 })
               });
-              const data = await response.json();
               if (data.success && data.notifiedCount > 0) {
                 toast.success(`${data.notifiedCount} policiais notificados por e-mail.`);
               }
-            } catch (notifyError) {
+            } catch (notifyError: any) {
               console.error('Erro ao enviar notificações:', notifyError);
+              toast.error(`Aviso: O documento foi salvo mas as notificações por e-mail falharam: ${notifyError.message}`);
             }
           } catch (error) {
             console.error('Erro ao salvar análise:', error);

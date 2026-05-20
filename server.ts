@@ -338,6 +338,17 @@ async function startServer() {
       res.json({ success: true, notifiedCount: notificationsToSend.length });
     } catch (error: any) {
       console.error("Notification Error:", error);
+      try {
+        await db.collection('system_logs').add({
+          level: 'error',
+          message: `Falha ao enviar notificações do ${docInfo?.type || 'Documento'} nº ${docInfo?.number || 'S/N'}: ${error.message}`,
+          timestamp: new Date().toISOString(),
+          error: error.stack || error.message,
+          details: docInfo ? { docType: docInfo.type, docNumber: docInfo.number } : null
+        });
+      } catch (logErr) {
+        console.error("Failed to write error log to Firestore:", logErr);
+      }
       res.status(500).json({ error: error.message });
     }
   });
@@ -378,6 +389,16 @@ async function startServer() {
       res.json({ success: true });
     } catch (error: any) {
       console.error("SMTP Test Error:", error);
+      try {
+        await db.collection('system_logs').add({
+          level: 'error',
+          message: `Falha ao enviar e-mail de teste para ${email}: ${error.message}`,
+          timestamp: new Date().toISOString(),
+          error: error.stack || error.message
+        });
+      } catch (logErr) {
+        console.error("Failed to write error log to Firestore:", logErr);
+      }
       res.status(500).json({ error: error.message });
     }
   });
