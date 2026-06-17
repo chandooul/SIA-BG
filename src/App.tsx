@@ -50,6 +50,8 @@ import {
 } from './firebase';
 import { 
   signInWithPopup, 
+  signInWithRedirect,
+  getRedirectResult,
   signOut, 
   onAuthStateChanged, 
   User,
@@ -193,8 +195,19 @@ export default function App() {
   const [aditamentoDate, setAditamentoDate] = useState<string>('');
   const [aditamentoPdfUrl, setAditamentoPdfUrl] = useState<string | null>(null);
 
+  // Diversos Analysis State
+  const [diversosResults, setDiversosResults] = useState<IdentificationResult[]>([]);
+  const [diversosFullText, setDiversosFullText] = useState<{page: number, text: string}[]>([]);
+  const [diversosFileName, setDiversosFileName] = useState<string | null>(null);
+  const [diversosUploadedAt, setDiversosUploadedAt] = useState<string | null>(null);
+  const [diversosNumber, setDiversosNumber] = useState<string>('');
+  const [diversosDate, setDiversosDate] = useState<string>('');
+  const [diversosPdfUrl, setDiversosPdfUrl] = useState<string | null>(null);
+  const [diversosCustomTitle, setDiversosCustomTitle] = useState<string>('Documento Diverso');
+
   const [userSpecificResults, setUserSpecificResults] = useState<any[]>([]);
-  const [uploadDocType, setUploadDocType] = useState<'BG' | 'ADITAMENTO'>('BG');
+  const [uploadDocType, setUploadDocType] = useState<'BG' | 'ADITAMENTO' | 'DIVERSOS'>('BG');
+  const [uploadCustomTitle, setUploadCustomTitle] = useState<string>('');
   const [uploadBgNumber, setUploadBgNumber] = useState<string>('');
   const [uploadBgDate, setUploadBgDate] = useState<string>(new Date().toISOString().split('T')[0]);
 
@@ -211,6 +224,21 @@ export default function App() {
 
   // Auth Listener
   useEffect(() => {
+    // Check for redirect login result on mount
+    getRedirectResult(auth)
+      .then((result) => {
+        if (result && result.user) {
+          console.log('Redirect login successful:', result.user.email);
+          toast.success('Acesso administrativo concedido!');
+        }
+      })
+      .catch((error) => {
+        console.error('Error in redirect login result:', error);
+        if (error.code !== 'auth/redirect-cancelled-by-user') {
+          toast.error(`Erro no login por redirecionamento: ${error.message}`);
+        }
+      });
+
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
       setLoading(false);
@@ -292,6 +320,56 @@ export default function App() {
       unsubAditamento();
     };
   }, []);
+
+  // Listen for user-specific DIVERSOS document (restricted to the user who uploaded it)
+  useEffect(() => {
+    const currentUserId = user?.email || loggedInOfficer?.registration || loggedInOfficer?.id;
+    if (!currentUserId) {
+      // Clear diversos state when not logged in
+      setDiversosResults([]);
+      setDiversosFullText([]);
+      setDiversosFileName(null);
+      setDiversosPdfUrl(null);
+      setDiversosUploadedAt(null);
+      setDiversosNumber('');
+      setDiversosDate('');
+      setDiversosCustomTitle('Documento Diverso');
+      return;
+    }
+
+    const sanitizedUserId = currentUserId.replace(/[^a-zA-Z0-9]/g, '_');
+    const docId = `latest_diversos_${sanitizedUserId}`;
+    console.log('Subscribing to user-specific Diversos document:', docId);
+    
+    const unsubDiversos = onSnapshot(doc(db, 'bg_analysis', docId), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setDiversosResults(data.results || []);
+        setDiversosFullText(data.fullText || []);
+        setDiversosFileName(data.fileName || null);
+        setDiversosPdfUrl(data.pdfUrl || null);
+        setDiversosUploadedAt(data.uploadedAt || null);
+        setDiversosNumber(data.bgNumber || '');
+        setDiversosDate(data.bgDate || '');
+        setDiversosCustomTitle(data.customTitle || 'Documento Diverso');
+        console.log('User-specific Diversos analysis loaded from Firestore:', data.pdfUrl);
+      } else {
+        // Clear if not exists
+        setDiversosResults([]);
+        setDiversosFullText([]);
+        setDiversosFileName(null);
+        setDiversosPdfUrl(null);
+        setDiversosUploadedAt(null);
+        setDiversosNumber('');
+        setDiversosDate('');
+        setDiversosCustomTitle('Documento Diverso');
+      }
+    }, (err) => {
+      console.warn('Note: User-specific Diversos analysis not found or access restricted:', err.message);
+    });
+
+    return () => unsubDiversos();
+  }, [user, loggedInOfficer]);
 
   // Admin Listener - reacts to user login
   useEffect(() => {
@@ -379,6 +457,21 @@ export default function App() {
         toast.error(`Erro no login (${errorCode}): ${error.message}`);
       }
     } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleLoginRedirect = async () => {
+    console.log('Login button clicked, initiating Google Auth via Redirect...');
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
+    
+    try {
+      setIsLoggingIn(true);
+      await signInWithRedirect(auth, provider, browserPopupRedirectResolver);
+    } catch (error: any) {
+      console.error('Redirect login initialization error:', error);
+      toast.error(`Erro ao iniciar login por redirecionamento: ${error.message}`);
       setIsLoggingIn(false);
     }
   };
@@ -854,10 +947,34 @@ export default function App() {
       }
     });
 
+    diversosResults.forEach(res => {
+      if (res.type === 'officer' && res.metadata) {
+        const isMatch = res.metadata.registration === loggedInOfficer.registration || 
+                        res.metadata.name === loggedInOfficer.name;
+        if (isMatch) {
+          personalResults.push({
+            ...res,
+            docType: 'DIVERSOS',
+            docTitle: diversosCustomTitle || 'Documento Diverso',
+            label: 'Identificado via Banco de Dados'
+          });
+        }
+      }
+      if (res.type === 'unit' && res.match === loggedInOfficer.unit) {
+        personalResults.push({
+          ...res,
+          docType: 'DIVERSOS',
+          docTitle: diversosCustomTitle || 'Documento Diverso',
+          label: 'Sua Unidade Identificada'
+        });
+      }
+    });
+
     // 2. Search fullText for keywords (to catch things not in global results or newly added)
     const combinedFullText = [
       ...bgFullText.map(p => ({ ...p, docType: 'BG' })),
-      ...aditamentoFullText.map(p => ({ ...p, docType: 'ADITAMENTO' }))
+      ...aditamentoFullText.map(p => ({ ...p, docType: 'ADITAMENTO' })),
+      ...diversosFullText.map(p => ({ ...p, docType: 'DIVERSOS', docTitle: diversosCustomTitle || 'Documento Diverso' }))
     ];
 
     if (combinedFullText.length) {
@@ -872,6 +989,7 @@ export default function App() {
         const textNormalized = normalizeText(text);
         const textFuzzy = normalizeTextFuzzy(text);
         const docType = (pageData as any).docType;
+        const docTitle = (pageData as any).docTitle;
 
         // Search for keywords
         keywords.forEach(kw => {
@@ -894,6 +1012,7 @@ export default function App() {
               context: context ? `...${context}...` : 'Menção encontrada no texto.',
               page: pageData.page,
               docType,
+              docTitle: docTitle || null,
               label: 'Palavra-chave Pessoal'
             });
           }
@@ -920,6 +1039,7 @@ export default function App() {
               context: context ? `...${context}...` : 'Menção encontrada no texto.',
               page: pageData.page,
               docType,
+              docTitle: docTitle || null,
               label: id === loggedInOfficer.registration ? 'Sua Matrícula' : 'Seu Nome'
             });
           }
@@ -935,7 +1055,7 @@ export default function App() {
     );
 
     setUserSpecificResults(uniqueResults);
-  }, [bgResults, aditamentoResults, bgFullText, aditamentoFullText, loggedInOfficer?.keywords, loggedInOfficer?.registration, loggedInOfficer?.name, loggedInOfficer?.unit]);
+  }, [bgResults, aditamentoResults, diversosResults, bgFullText, aditamentoFullText, diversosFullText, diversosCustomTitle, loggedInOfficer?.keywords, loggedInOfficer?.registration, loggedInOfficer?.name, loggedInOfficer?.unit]);
 
   const processPDF = async (data: ArrayBuffer, name: string, append = false) => {
     console.log('Starting PDF processing for:', name);
@@ -944,26 +1064,32 @@ export default function App() {
     setProcessingMessage('Iniciando processamento...');
     
     const currentDocType = uploadDocType;
-    const currentResults = currentDocType === 'BG' ? bgResults : aditamentoResults;
-    const currentFullText = currentDocType === 'BG' ? bgFullText : aditamentoFullText;
-    const currentFileName = currentDocType === 'BG' ? bgFileName : aditamentoFileName;
-    const currentPdfUrl = currentDocType === 'BG' ? bgPdfUrl : aditamentoPdfUrl;
+    const currentResults = currentDocType === 'BG' ? bgResults : (currentDocType === 'ADITAMENTO' ? aditamentoResults : diversosResults);
+    const currentFullText = currentDocType === 'BG' ? bgFullText : (currentDocType === 'ADITAMENTO' ? aditamentoFullText : diversosFullText);
+    const currentFileName = currentDocType === 'BG' ? bgFileName : (currentDocType === 'ADITAMENTO' ? aditamentoFileName : diversosFileName);
+    const currentPdfUrl = currentDocType === 'BG' ? bgPdfUrl : (currentDocType === 'ADITAMENTO' ? aditamentoPdfUrl! : diversosPdfUrl!);
 
     if (!append) {
       if (currentDocType === 'BG') {
         setBgResults([]);
         setBgFullText([]);
         setBgFileName(name);
-      } else {
+      } else if (currentDocType === 'ADITAMENTO') {
         setAditamentoResults([]);
         setAditamentoFullText([]);
         setAditamentoFileName(name);
+      } else {
+        setDiversosResults([]);
+        setDiversosFullText([]);
+        setDiversosFileName(name);
       }
     } else {
       if (currentDocType === 'BG') {
         setBgFileName(prev => prev ? `${prev} + ${name}` : name);
-      } else {
+      } else if (currentDocType === 'ADITAMENTO') {
         setAditamentoFileName(prev => prev ? `${prev} + ${name}` : name);
+      } else {
+        setDiversosFileName(prev => prev ? `${prev} + ${name}` : name);
       }
     }
 
@@ -1303,7 +1429,7 @@ export default function App() {
       if (append) {
         const newResults = [...currentResults, ...found];
         const newFullText = [...currentFullText, ...pagesText];
-        
+         
         if (currentDocType === 'BG') {
           setBgResults(newResults);
           setBgFullText(newFullText);
@@ -1311,13 +1437,21 @@ export default function App() {
           setBgFileName(currentFileName ? `${currentFileName} + ${name}` : name);
           setBgNumber(uploadBgNumber);
           setBgDate(uploadBgDate);
-        } else {
+        } else if (currentDocType === 'ADITAMENTO') {
           setAditamentoResults(newResults);
           setAditamentoFullText(newFullText);
           setAditamentoPdfUrl(storageUrl || localUrl);
           setAditamentoFileName(currentFileName ? `${currentFileName} + ${name}` : name);
           setAditamentoNumber(uploadBgNumber);
           setAditamentoDate(uploadBgDate);
+        } else {
+          setDiversosResults(newResults);
+          setDiversosFullText(newFullText);
+          setDiversosPdfUrl(storageUrl || localUrl);
+          setDiversosFileName(currentFileName ? `${currentFileName} + ${name}` : name);
+          setDiversosNumber(uploadBgNumber);
+          setDiversosDate(uploadBgDate);
+          setDiversosCustomTitle(uploadCustomTitle || 'Documento Diverso');
         }
 
         // If admin, save to Firestore
@@ -1331,7 +1465,9 @@ export default function App() {
               toast.warning('Atenção: O arquivo foi processado localmente, mas o link permanente falhou. Outros usuários não conseguirão baixar este arquivo.');
             }
 
-            const docId = currentDocType === 'BG' ? 'latest_bg' : 'latest_aditamento';
+            const currentUserId = user?.email || loggedInOfficer?.registration || loggedInOfficer?.id || 'anonymous';
+            const sanitizedUserId = currentUserId.replace(/[^a-zA-Z0-9]/g, '_');
+            const docId = currentDocType === 'BG' ? 'latest_bg' : (currentDocType === 'ADITAMENTO' ? 'latest_aditamento' : `latest_diversos_${sanitizedUserId}`);
             console.log(`Salvando análise no Firestore (${docId}). URL do Storage:`, storageUrl);
             
             await setDoc(doc(db, 'bg_analysis', docId), {
@@ -1341,9 +1477,11 @@ export default function App() {
               pdfUrl: storageUrl,
               uploadedAt: new Date().toISOString(),
               uploadedBy: user?.displayName || loggedInOfficer?.name || 'Administrador',
+              uploadedById: currentUserId,
               docType: currentDocType,
               bgNumber: uploadBgNumber,
-              bgDate: uploadBgDate
+              bgDate: uploadBgDate,
+              ...(currentDocType === 'DIVERSOS' ? { customTitle: uploadCustomTitle || 'Documento Diverso' } : {})
             });
             toast.success('Análise sincronizada com o banco de dados global!');
 
@@ -1351,7 +1489,7 @@ export default function App() {
             try {
               await addDoc(collection(db, 'system_logs'), {
                 level: 'info',
-                message: `Novo ${currentDocType} (${uploadBgNumber}) processado e salvo (Append).`,
+                message: `Novo ${currentDocType === 'DIVERSOS' ? (uploadCustomTitle || 'Documento Diverso') : currentDocType} (${uploadBgNumber}) processado e salvo (Append).`,
                 timestamp: new Date().toISOString(),
                 details: { fileName: name, uploadedBy: user?.email || loggedInOfficer?.registration }
               });
@@ -1366,7 +1504,7 @@ export default function App() {
                 body: JSON.stringify({
                   fullText: newFullText,
                   docInfo: {
-                    type: currentDocType,
+                    type: currentDocType === 'DIVERSOS' ? (uploadCustomTitle || 'Documento Diverso') : currentDocType,
                     number: uploadBgNumber,
                     date: uploadBgDate
                   }
@@ -1396,13 +1534,21 @@ export default function App() {
           setBgFileName(name);
           setBgNumber(uploadBgNumber);
           setBgDate(uploadBgDate);
-        } else {
+        } else if (currentDocType === 'ADITAMENTO') {
           setAditamentoResults(found);
           setAditamentoFullText(pagesText);
           setAditamentoPdfUrl(storageUrl || localUrl);
           setAditamentoFileName(name);
           setAditamentoNumber(uploadBgNumber);
           setAditamentoDate(uploadBgDate);
+        } else {
+          setDiversosResults(found);
+          setDiversosFullText(pagesText);
+          setDiversosPdfUrl(storageUrl || localUrl);
+          setDiversosFileName(name);
+          setDiversosNumber(uploadBgNumber);
+          setDiversosDate(uploadBgDate);
+          setDiversosCustomTitle(uploadCustomTitle || 'Documento Diverso');
         }
 
         // If admin, save to Firestore
@@ -1416,7 +1562,9 @@ export default function App() {
               toast.warning('Atenção: O arquivo foi processado localmente, mas o link permanente falhou. Outros usuários não conseguirão baixar este arquivo.');
             }
 
-            const docId = currentDocType === 'BG' ? 'latest_bg' : 'latest_aditamento';
+            const currentUserId = user?.email || loggedInOfficer?.registration || loggedInOfficer?.id || 'anonymous';
+            const sanitizedUserId = currentUserId.replace(/[^a-zA-Z0-9]/g, '_');
+            const docId = currentDocType === 'BG' ? 'latest_bg' : (currentDocType === 'ADITAMENTO' ? 'latest_aditamento' : `latest_diversos_${sanitizedUserId}`);
             console.log(`Salvando análise no Firestore (${docId}). URL do Storage:`, storageUrl);
 
             await setDoc(doc(db, 'bg_analysis', docId), {
@@ -1426,9 +1574,11 @@ export default function App() {
               pdfUrl: storageUrl,
               uploadedAt: new Date().toISOString(),
               uploadedBy: user?.displayName || loggedInOfficer?.name || 'Administrador',
+              uploadedById: currentUserId,
               docType: currentDocType,
               bgNumber: uploadBgNumber,
-              bgDate: uploadBgDate
+              bgDate: uploadBgDate,
+              ...(currentDocType === 'DIVERSOS' ? { customTitle: uploadCustomTitle || 'Documento Diverso' } : {})
             });
             toast.success('Análise sincronizada com o banco de dados global!');
 
@@ -1436,7 +1586,7 @@ export default function App() {
             try {
               await addDoc(collection(db, 'system_logs'), {
                 level: 'info',
-                message: `Novo ${currentDocType} (${uploadBgNumber}) processado e salvo (Novo).`,
+                message: `Novo ${currentDocType === 'DIVERSOS' ? (uploadCustomTitle || 'Documento Diverso') : currentDocType} (${uploadBgNumber}) processado e salvo (Novo).`,
                 timestamp: new Date().toISOString(),
                 details: { fileName: name, uploadedBy: user?.email || loggedInOfficer?.registration }
               });
@@ -1451,7 +1601,7 @@ export default function App() {
                 body: JSON.stringify({
                   fullText: pagesText,
                   docInfo: {
-                    type: currentDocType,
+                    type: currentDocType === 'DIVERSOS' ? (uploadCustomTitle || 'Documento Diverso') : currentDocType,
                     number: uploadBgNumber,
                     date: uploadBgDate
                   }
@@ -1531,7 +1681,14 @@ export default function App() {
   }
 
   if (!user && !loggedInOfficer) {
-    return <LoginScreen onLogin={handleOfficerLogin} onAdminLogin={handleLogin} isLoggingIn={isLoggingIn} />;
+    return (
+      <LoginScreen 
+        onLogin={handleOfficerLogin} 
+        onAdminLogin={handleLogin} 
+        onAdminLoginRedirect={handleLoginRedirect}
+        isLoggingIn={isLoggingIn} 
+      />
+    );
   }
 
   return (
@@ -1812,6 +1969,27 @@ export default function App() {
                 </a>
               </div>
             )}
+            {diversosPdfUrl && (
+              <div className="flex items-center gap-2">
+                <a 
+                  href={diversosPdfUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 px-4 py-2 bg-white border border-[#5A5A40]/10 rounded-full text-[#5A5A40] hover:bg-[#f5f5f0] transition-all shadow-sm group text-xs no-underline font-sans"
+                >
+                  <FileText className="w-3.5 h-3.5 group-hover:scale-110 transition-transform text-[#5A5A40]" />
+                  <span className="font-bold uppercase tracking-widest truncate max-w-[120px]">{diversosCustomTitle ? diversosCustomTitle.substring(0, 15).toUpperCase() : 'DIVERSOS'}</span>
+                </a>
+                <a 
+                  href={diversosPdfUrl}
+                  download={`${diversosCustomTitle || 'Documento'}_${diversosNumber || 'S-N'}.pdf`}
+                  className="flex items-center justify-center w-9 h-9 bg-white border border-[#5A5A40]/10 rounded-full text-[#5A5A40] hover:bg-[#5A5A40] hover:text-white transition-all shadow-sm group"
+                  title="Baixar PDF"
+                >
+                  <Download className="w-4 h-4" />
+                </a>
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-3 bg-white px-4 py-2 rounded-full border border-black/5 shadow-sm">
             <div className="w-7 h-7 rounded-full bg-[#5A5A40]/10 flex items-center justify-center">
@@ -2005,112 +2183,226 @@ export default function App() {
                 </div>
               )}
 
-              {!bgFileName && !aditamentoFileName && (
+              {/* Diversos Results Section */}
+              {diversosFileName && (
+                <div className="space-y-8 pt-8 border-t border-black/5">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 md:w-12 md:h-12 bg-[#5A5A40]/10 text-[#5A5A40] rounded-xl md:rounded-2xl flex items-center justify-center">
+                        <FileText className="w-5 h-5 md:w-6 md:h-6" />
+                      </div>
+                      <h3 className="text-2xl md:text-3xl font-serif font-light">{diversosCustomTitle || 'Documento Diverso'}</h3>
+                    </div>
+                    <div className="flex items-center gap-2 bg-white/50 px-4 py-2 rounded-xl md:rounded-2xl border border-[#5A5A40]/10 w-fit">
+                      <ShieldCheck className="w-4 h-4 text-[#5A5A40]" />
+                      <span className="text-xs md:text-sm font-serif text-[#5A5A40]">
+                        Nº {diversosNumber}, de {formatDate(diversosDate)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <button 
+                      onClick={() => setDetailView({ docType: 'DIVERSOS', category: 'officer' })}
+                      className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm hover:shadow-md hover:scale-[1.02] transition-all text-left group"
+                    >
+                      <div className="flex items-center gap-4 mb-4">
+                        <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                          <Users className="w-6 h-6" />
+                        </div>
+                        <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">Policiais</span>
+                      </div>
+                      <p className="text-4xl font-serif">{diversosResults.filter(r => r.type === 'officer').length}</p>
+                      <div className="flex items-center justify-between mt-2">
+                        <p className="text-sm text-[#5A5A40]/60">No Documento</p>
+                        <ChevronRight className="w-4 h-4 text-[#5A5A40]/20 group-hover:text-[#5A5A40] transition-colors" />
+                      </div>
+                    </button>
+                    <button 
+                      onClick={() => setDetailView({ docType: 'DIVERSOS', category: 'unit' })}
+                      className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm hover:shadow-md hover:scale-[1.02] transition-all text-left group"
+                    >
+                      <div className="flex items-center gap-4 mb-4">
+                        <div className="w-12 h-12 bg-green-50 text-green-600 rounded-2xl flex items-center justify-center group-hover:bg-green-600 group-hover:text-white transition-colors">
+                          <Building2 className="w-6 h-6" />
+                        </div>
+                        <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">5º BPM</span>
+                      </div>
+                      <p className="text-4xl font-serif">
+                        {diversosResults.filter(r => 
+                          r.type === 'unit' && 
+                          (normalizeText(r.match).includes('5 bpm') || 
+                           normalizeText(r.match).includes('5bpm') || 
+                           normalizeText(r.match).includes('5 batalhao') ||
+                           normalizeText(r.match).includes('5batalhao'))
+                        ).length}
+                      </p>
+                      <div className="flex items-center justify-between mt-2">
+                        <p className="text-sm text-[#5A5A40]/60">No Documento</p>
+                        <ChevronRight className="w-4 h-4 text-[#5A5A40]/20 group-hover:text-[#5A5A40] transition-colors" />
+                      </div>
+                    </button>
+                    <button 
+                      onClick={() => setDetailView({ docType: 'DIVERSOS', category: 'term' })}
+                      className="bg-white rounded-[32px] p-8 border border-black/5 shadow-sm hover:shadow-md hover:scale-[1.02] transition-all text-left group"
+                    >
+                      <div className="flex items-center gap-4 mb-4">
+                        <div className="w-12 h-12 bg-orange-50 text-orange-600 rounded-2xl flex items-center justify-center group-hover:bg-orange-600 group-hover:text-white transition-colors">
+                          <Search className="w-6 h-6" />
+                        </div>
+                        <span className="text-sm font-bold text-[#5A5A40]/40 uppercase tracking-widest">Termos</span>
+                      </div>
+                      <p className="text-4xl font-serif">
+                        {diversosResults.filter(r => r.type === 'term').length}
+                      </p>
+                      <div className="flex items-center justify-between mt-2">
+                        <p className="text-sm text-[#5A5A40]/60">No Documento</p>
+                        <ChevronRight className="w-4 h-4 text-[#5A5A40]/20 group-hover:text-[#5A5A40] transition-colors" />
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {!bgFileName && !aditamentoFileName && !diversosFileName && (
                   <div className="bg-white rounded-[32px] md:rounded-[40px] p-8 md:p-20 border border-black/5 text-center shadow-sm">
                     <div className="w-16 h-16 md:w-24 md:h-24 bg-[#f5f5f0] rounded-full flex items-center justify-center mx-auto mb-6 md:mb-8">
                       <FileSearch className="w-8 h-8 md:w-10 md:h-10 text-[#5A5A40]/20" />
                     </div>
                     <h3 className="text-2xl md:text-3xl font-serif font-bold mb-4">Nenhum documento analisado</h3>
                     <p className="text-base md:text-lg text-[#5A5A40]/60 font-serif italic max-w-md mx-auto">
-                      Carregue um Boletim Geral ou Aditamento na área abaixo para iniciar a identificação automática.
+                      Carregue um Boletim Geral, Aditamento ou Documento Diverso na área abaixo para iniciar a identificação automática.
                     </p>
                   </div>
               )}
 
               {/* Upload Area (Admin Only) */}
-              {(isMasterAdmin(user?.email) || loggedInOfficer?.role === 'admin') && (
-                <div className="space-y-6">
-                  <div className="flex gap-4 mb-2">
-                    <button 
-                      onClick={() => setUploadDocType('BG')}
-                      className={cn(
-                        "flex-1 px-6 py-3 rounded-2xl font-bold text-xs uppercase tracking-widest transition-all",
-                        uploadDocType === 'BG' ? "bg-[#5A5A40] text-white shadow-md" : "bg-white text-[#5A5A40]/40 border border-black/5"
-                      )}
-                    >
-                      Boletim Geral (BG)
-                    </button>
-                    <button 
-                      onClick={() => setUploadDocType('ADITAMENTO')}
-                      className={cn(
-                        "flex-1 px-6 py-3 rounded-2xl font-bold text-xs uppercase tracking-widest transition-all",
-                        uploadDocType === 'ADITAMENTO' ? "bg-[#5A5A40] text-white shadow-md" : "bg-white text-[#5A5A40]/40 border border-black/5"
-                      )}
-                    >
-                      Aditamento
-                    </button>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                      <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Número do {uploadDocType}</label>
-                      <input 
-                        type="text"
-                        placeholder="Ex: 065"
-                        value={uploadBgNumber}
-                        onChange={(e) => setUploadBgNumber(e.target.value)}
-                        className="w-full bg-white border border-black/5 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-[#5A5A40]/20 transition-all"
-                      />
+              {(isMasterAdmin(user?.email) || loggedInOfficer?.role === 'admin') && (() => {
+                const isFormInvalid = !uploadBgNumber || !uploadBgDate || (uploadDocType === 'DIVERSOS' && !uploadCustomTitle.trim());
+                return (
+                  <div className="space-y-6">
+                    <div className="flex flex-wrap md:flex-nowrap gap-4 mb-2">
+                      <button 
+                        onClick={() => setUploadDocType('BG')}
+                        className={cn(
+                          "flex-1 min-w-[120px] px-6 py-3 rounded-2xl font-bold text-xs uppercase tracking-widest transition-all",
+                          uploadDocType === 'BG' ? "bg-[#5A5A40] text-white shadow-md" : "bg-white text-[#5A5A40]/40 border border-black/5"
+                        )}
+                      >
+                        Boletim Geral (BG)
+                      </button>
+                      <button 
+                        onClick={() => setUploadDocType('ADITAMENTO')}
+                        className={cn(
+                          "flex-1 min-w-[120px] px-6 py-3 rounded-2xl font-bold text-xs uppercase tracking-widest transition-all",
+                          uploadDocType === 'ADITAMENTO' ? "bg-[#5A5A40] text-white shadow-md" : "bg-white text-[#5A5A40]/40 border border-black/5"
+                        )}
+                      >
+                        Aditamento
+                      </button>
+                      <button 
+                        onClick={() => setUploadDocType('DIVERSOS')}
+                        className={cn(
+                          "flex-1 min-w-[120px] px-6 py-3 rounded-2xl font-bold text-xs uppercase tracking-widest transition-all",
+                          uploadDocType === 'DIVERSOS' ? "bg-[#5A5A40] text-white shadow-md" : "bg-white text-[#5A5A40]/40 border border-black/5"
+                        )}
+                      >
+                        Outros / Diversos
+                      </button>
                     </div>
-                    <div className="space-y-2">
-                      <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Data do {uploadDocType}</label>
-                      <input 
-                        type="date"
-                        value={uploadBgDate}
-                        onChange={(e) => setUploadBgDate(e.target.value)}
-                        className="w-full bg-white border border-black/5 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-[#5A5A40]/20 transition-all"
-                      />
-                    </div>
-                  </div>
 
-                  <div className="relative group">
-                    <input 
-                      type="file" 
-                      accept=".pdf" 
-                      onChange={onFileChange}
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                      disabled={isProcessing || !uploadBgNumber || !uploadBgDate}
-                    />
-                    <div className={cn(
-                      "border-2 border-dashed rounded-[40px] p-16 flex flex-col items-center justify-center transition-all duration-300",
-                      isProcessing ? "bg-white/50 border-[#5A5A40]/20" : 
-                      (!uploadBgNumber || !uploadBgDate) ? "bg-black/5 border-black/5 cursor-not-allowed" :
-                      "bg-white border-[#5A5A40]/10 group-hover:border-[#5A5A40]/40 group-hover:bg-white/80"
-                    )}>
-                      {isProcessing ? (
-                        <div className="text-center space-y-6">
-                          <div className="relative w-24 h-24 mx-auto">
-                            <Loader2 className="w-24 h-24 animate-spin text-[#5A5A40]" />
-                            <div className="absolute inset-0 flex items-center justify-center text-sm font-bold">
-                              {progress}%
+                    {uploadDocType === 'DIVERSOS' && (
+                      <div className="space-y-2 mb-2 animate-fadeIn">
+                        <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Tipo de Documento / Título</label>
+                        <input 
+                          type="text"
+                          placeholder="Ex: Ofício Circular nº 045, Portaria, Memo, etc."
+                          value={uploadCustomTitle}
+                          onChange={(e) => setUploadCustomTitle(e.target.value)}
+                          className="w-full bg-white border border-black/5 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-[#5A5A40]/20 transition-all font-sans"
+                        />
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="space-y-2">
+                        <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">
+                          {uploadDocType === 'BG' ? 'Número do BG' : (uploadDocType === 'ADITAMENTO' ? 'Número do Aditamento' : 'Número do Documento')}
+                        </label>
+                        <input 
+                          type="text"
+                          placeholder="Ex: 065"
+                          value={uploadBgNumber}
+                          onChange={(e) => setUploadBgNumber(e.target.value)}
+                          className="w-full bg-white border border-black/5 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-[#5A5A40]/20 transition-all"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">
+                          {uploadDocType === 'BG' ? 'Data do BG' : (uploadDocType === 'ADITAMENTO' ? 'Data do Aditamento' : 'Data do Documento')}
+                        </label>
+                        <input 
+                          type="date"
+                          value={uploadBgDate}
+                          onChange={(e) => setUploadBgDate(e.target.value)}
+                          className="w-full bg-white border border-black/5 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-[#5A5A40]/20 transition-all"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="relative group">
+                      <input 
+                        type="file" 
+                        accept=".pdf" 
+                        onChange={onFileChange}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                        disabled={isProcessing || isFormInvalid}
+                      />
+                      <div className={cn(
+                        "border-2 border-dashed rounded-[40px] p-16 flex flex-col items-center justify-center transition-all duration-300",
+                        isProcessing ? "bg-white/50 border-[#5A5A40]/20" : 
+                        isFormInvalid ? "bg-black/5 border-black/5 cursor-not-allowed" :
+                        "bg-white border-[#5A5A40]/10 group-hover:border-[#5A5A40]/40 group-hover:bg-white/80"
+                      )}>
+                        {isProcessing ? (
+                          <div className="text-center space-y-6">
+                            <div className="relative w-24 h-24 mx-auto">
+                              <Loader2 className="w-24 h-24 animate-spin text-[#5A5A40]" />
+                              <div className="absolute inset-0 flex items-center justify-center text-sm font-bold">
+                                {progress}%
+                              </div>
                             </div>
+                            <p className="text-xl font-serif italic text-[#5A5A40]">{processingMessage}</p>
                           </div>
-                          <p className="text-xl font-serif italic text-[#5A5A40]">{processingMessage}</p>
-                        </div>
-                      ) : (
-                        <>
-                          <div className={cn(
-                            "w-20 h-20 rounded-full flex items-center justify-center mb-6 transition-transform",
-                            (!uploadBgNumber || !uploadBgDate) ? "bg-black/5" : "bg-[#f5f5f0] group-hover:scale-110"
-                          )}>
-                            <Upload className={cn(
-                              "w-8 h-8",
-                              (!uploadBgNumber || !uploadBgDate) ? "text-black/20" : "text-[#5A5A40]"
-                            )} />
-                          </div>
-                          <p className={cn(
-                            "text-2xl font-serif mb-2",
-                            (!uploadBgNumber || !uploadBgDate) ? "text-black/20" : "text-black"
-                          )}>
-                            {(!uploadBgNumber || !uploadBgDate) ? "Preencha o Número e Data acima" : "Arraste o PDF ou clique para selecionar"}
-                          </p>
-                          <p className="text-[#5A5A40]/60">{uploadDocType === 'BG' ? 'Boletim Geral' : 'Aditamento'} da PMRN (PDF)</p>
-                        </>
-                      )}
+                        ) : (
+                          <>
+                            <div className={cn(
+                              "w-20 h-20 rounded-full flex items-center justify-center mb-6 transition-transform",
+                              isFormInvalid ? "bg-black/5" : "bg-[#f5f5f0] group-hover:scale-110"
+                            )}>
+                              <Upload className={cn(
+                                "w-8 h-8",
+                                isFormInvalid ? "text-black/20" : "text-[#5A5A40]"
+                              )} />
+                            </div>
+                            <p className={cn(
+                              "text-2xl font-serif mb-2",
+                              isFormInvalid ? "text-black/20" : "text-black"
+                            )}>
+                              {isFormInvalid 
+                                ? (uploadDocType === 'DIVERSOS' && !uploadCustomTitle.trim() ? "Preencha o Tipo/Título, Número e Data acima" : "Preencha o Número e Data acima")
+                                : "Arraste o PDF ou clique para selecionar"}
+                            </p>
+                            <p className="text-[#5A5A40]/60">
+                              {uploadDocType === 'BG' ? 'Boletim Geral' : (uploadDocType === 'ADITAMENTO' ? 'Aditamento' : (uploadCustomTitle || 'Documento Diverso'))} da PMRN (PDF)
+                            </p>
+                          </>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
                 </>
               ) : (
                 <div className="space-y-8">
@@ -2133,10 +2425,10 @@ export default function App() {
                         </p>
                       </div>
                     </div>
-                    {((detailView.docType === 'BG' && bgPdfUrl) || (detailView.docType === 'ADITAMENTO' && aditamentoPdfUrl)) && (
+                    {((detailView.docType === 'BG' && bgPdfUrl) || (detailView.docType === 'ADITAMENTO' && aditamentoPdfUrl) || (detailView.docType === 'DIVERSOS' && diversosPdfUrl)) && (
                       <div className="flex items-center gap-3">
                         <a 
-                          href={detailView.docType === 'BG' ? bgPdfUrl! : aditamentoPdfUrl!}
+                          href={detailView.docType === 'BG' ? bgPdfUrl! : (detailView.docType === 'ADITAMENTO' ? aditamentoPdfUrl! : diversosPdfUrl!)}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="hidden md:flex items-center gap-2 px-6 py-3 bg-white rounded-2xl border border-black/5 text-xs font-bold uppercase tracking-widest text-[#5A5A40] hover:bg-[#f5f5f0] transition-all no-underline"
@@ -2144,15 +2436,15 @@ export default function App() {
                           <ExternalLink className="w-4 h-4" /> Ver PDF Original
                         </a>
                         <a 
-                          href={detailView.docType === 'BG' ? bgPdfUrl! : aditamentoPdfUrl!}
-                          download={`${detailView.docType}_${detailView.docType === 'BG' ? bgNumber : aditamentoNumber}.pdf`}
+                          href={detailView.docType === 'BG' ? bgPdfUrl! : (detailView.docType === 'ADITAMENTO' ? aditamentoPdfUrl! : diversosPdfUrl!)}
+                          download={`${detailView.docType}_${detailView.docType === 'BG' ? bgNumber : (detailView.docType === 'ADITAMENTO' ? aditamentoNumber : diversosNumber)}.pdf`}
                           className="flex items-center gap-2 px-6 py-3 bg-[#5A5A40] text-white rounded-2xl shadow-lg shadow-[#5A5A40]/20 hover:bg-[#4a4a35] transition-all no-underline text-xs font-bold uppercase tracking-widest"
                         >
                           <Download className="w-4 h-4" /> Download PDF
                         </a>
                         <button 
                           onClick={() => {
-                            const results = detailView.docType === 'BG' ? bgResults : aditamentoResults;
+                            const results = detailView.docType === 'BG' ? bgResults : (detailView.docType === 'ADITAMENTO' ? aditamentoResults : diversosResults);
                             const filtered = results.filter(res => {
                               if (detailView.category === 'officer') return res.type === 'officer';
                               if (detailView.category === 'unit') return res.type === 'unit';
@@ -2234,7 +2526,7 @@ export default function App() {
 
                   <div className="bg-white rounded-[40px] border border-black/5 overflow-hidden shadow-sm">
                     <div className="divide-y divide-black/5 min-h-[400px]">
-                      {(detailView.docType === 'BG' ? bgResults : aditamentoResults)
+                      {(detailView.docType === 'BG' ? bgResults : (detailView.docType === 'ADITAMENTO' ? aditamentoResults : diversosResults))
                         .filter(res => {
                           if (detailView.category === 'officer') return res.type === 'officer';
                           if (detailView.category === 'unit') {
@@ -2248,7 +2540,7 @@ export default function App() {
                           return true;
                         })
                         .length > 0 ? (
-                        (detailView.docType === 'BG' ? bgResults : aditamentoResults)
+                        (detailView.docType === 'BG' ? bgResults : (detailView.docType === 'ADITAMENTO' ? aditamentoResults : diversosResults))
                           .filter(res => {
                             if (detailView.category === 'officer') return res.type === 'officer';
                             if (detailView.category === 'unit') {
@@ -2920,12 +3212,23 @@ export default function App() {
 
 // --- Components ---
 
-function LoginScreen({ onLogin, onAdminLogin, isLoggingIn }: { onLogin: (reg: string, pass: string) => void, onAdminLogin: () => void, isLoggingIn: boolean }) {
+function LoginScreen({ 
+  onLogin, 
+  onAdminLogin, 
+  onAdminLoginRedirect, 
+  isLoggingIn 
+}: { 
+  onLogin: (reg: string, pass: string) => void, 
+  onAdminLogin: () => void, 
+  onAdminLoginRedirect: () => void,
+  isLoggingIn: boolean 
+}) {
   const [registration, setRegistration] = useState('');
   const [password, setPassword] = useState('');
   const [showTroubleshooting, setShowTroubleshooting] = useState(false);
 
   const currentDomain = window.location.hostname;
+  const isIframe = window.self !== window.top;
 
   return (
     <div className="min-h-screen bg-[#f5f5f0] flex items-center justify-center p-6">
@@ -2987,25 +3290,76 @@ function LoginScreen({ onLogin, onAdminLogin, isLoggingIn }: { onLogin: (reg: st
         </form>
 
         <div className="mt-10 pt-8 border-t border-black/5 space-y-4">
-          <button 
-            onClick={onAdminLogin}
-            disabled={isLoggingIn}
-            className="w-full flex items-center justify-center gap-2 text-sm font-bold text-[#5A5A40]/60 hover:text-[#5A5A40] transition-colors disabled:opacity-50"
-          >
-            {isLoggingIn ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <LogIn className="w-4 h-4" />
-            )}
-            {isLoggingIn ? 'Autenticando...' : 'Acesso Administrativo (Google)'}
-          </button>
+          {isIframe && (
+            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900 space-y-2 mb-2">
+              <p className="font-bold flex items-center gap-1.5 text-amber-800">
+                <AlertCircle className="w-4 h-4 shrink-0 text-amber-600" />
+                Aviso: Visualização em Iframe
+              </p>
+              <p className="text-[11px] text-amber-800/80 leading-relaxed">
+                O login administrativo do Google via Popups costuma ser bloqueado pelo navegador dentro do painel do AI Studio. 
+                Recomendamos fortemente usar uma das soluções abaixo para prosseguir:
+              </p>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <a 
+                  href={window.location.href} 
+                  target="_blank" 
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold px-3 py-1.5 rounded-xl text-[10px] transition-colors"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  Abrir em Nova Aba
+                </a>
+                <button 
+                  type="button" 
+                  onClick={onAdminLoginRedirect}
+                  className="inline-flex items-center gap-1.5 bg-amber-200 hover:bg-amber-300 text-amber-950 font-bold px-3 py-1.5 rounded-xl text-[10px] transition-colors"
+                >
+                  <LogIn className="w-3.5 h-3.5" />
+                  Login por Redirecionamento
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2 mb-1">Acesso Administrativo (Google)</div>
+          
+          <div className="flex flex-col sm:flex-row gap-3">
+            <button 
+              type="button"
+              onClick={onAdminLogin}
+              disabled={isLoggingIn}
+              className="flex-1 flex items-center justify-center gap-2 text-xs font-bold text-[#5A5A40]/80 hover:text-[#5A5A40] transition-colors disabled:opacity-50 border border-black/10 rounded-2xl py-3.5 hover:bg-black/5"
+            >
+              {isLoggingIn ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <LogIn className="w-3.5 h-3.5" />
+              )}
+              {isLoggingIn ? 'Autenticando...' : 'Google (Popup)'}
+            </button>
+
+            <button 
+              type="button"
+              onClick={onAdminLoginRedirect}
+              disabled={isLoggingIn}
+              className="flex-1 flex items-center justify-center gap-2 text-xs font-bold text-[#5A5A40]/80 hover:text-[#5A5A40] transition-colors disabled:opacity-50 border border-black/10 rounded-2xl py-3.5 hover:bg-black/5"
+            >
+              {isLoggingIn ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <LogIn className="w-3.5 h-3.5" />
+              )}
+              {isLoggingIn ? 'Redirecionando...' : 'Google (Redirect)'}
+            </button>
+          </div>
 
           <div className="text-center">
             <button 
               onClick={() => setShowTroubleshooting(!showTroubleshooting)}
               className="text-[10px] text-[#5A5A40]/40 hover:underline"
             >
-              Problemas com o login Google?
+              Problemas com o login do Google?
             </button>
           </div>
 
@@ -3015,17 +3369,18 @@ function LoginScreen({ onLogin, onAdminLogin, isLoggingIn }: { onLogin: (reg: st
               animate={{ opacity: 1, height: 'auto' }}
               className="bg-red-50 border border-red-100 rounded-2xl p-4 text-[11px] text-red-800 space-y-2"
             >
-              <p className="font-bold">Se a tela do Google "pisca e some":</p>
-              <p>Você precisa autorizar este domínio no Console do Firebase:</p>
-              <div className="bg-white/50 p-2 rounded font-mono break-all select-all">
+              <p className="font-bold">Se houver erros como "cancelled-popup-request" ou "popup-closed-by-user":</p>
+              <p>Isso acontece porque navegadores bloqueiam popups em sub-iframes seguros (como o painel lateral do AI Studio). Opções:</p>
+              <ul className="list-disc ml-4 space-y-1">
+                <li>Clique no botão <b>"Abrir em Nova Aba"</b> acima para rodar o app fora do iframe.</li>
+                <li>Ou utilize a opção de <b>"Login por Redirecionamento"</b> que não necessita de popups.</li>
+              </ul>
+              <hr className="border-red-200/50 my-2" />
+              <p className="font-bold">Para erros de "unauthorized-domain":</p>
+              <p>Adicione o domínio abaixo nas configurações do Firebase Console (Authentication &gt; Settings &gt; Authorized domains):</p>
+              <div className="bg-white/50 p-2 rounded font-mono break-all select-all font-bold">
                 {currentDomain}
               </div>
-              <p>Passos:</p>
-              <ol className="list-decimal ml-4 space-y-1">
-                <li>Acesse o <a href="https://console.firebase.google.com/" target="_blank" className="underline font-bold">Console Firebase</a></li>
-                <li>Vá em <b>Authentication</b> {'>'} <b>Settings</b> {'>'} <b>Authorized domains</b></li>
-                <li>Clique em <b>Add domain</b> e cole o endereço acima</li>
-              </ol>
             </motion.div>
           )}
         </div>
