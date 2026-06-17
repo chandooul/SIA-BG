@@ -140,13 +140,20 @@ async function fetchJson(url: string, options?: RequestInit) {
     return data;
   } else {
     const text = await response.text();
-    if (!response.ok) {
-      if (text.includes('<!doctype html>') || text.includes('<html>')) {
-        throw new Error(`O servidor retornou uma página HTML em vez de JSON (Status ${response.status}). Isso geralmente indica um erro de rota ou falha catastrófica no servidor.`);
+    const isHtml = text.toLowerCase().includes('<!doctype html>') || text.toLowerCase().includes('<html>');
+    
+    if (isHtml) {
+      if (!response.ok) {
+        throw new Error(`O servidor retornou uma página HTML de erro (Status ${response.status}). Isso geralmente ocorre por limite de tamanho de payload excedido pelo proxy ou rota incorreta.`);
       }
+      // Status is 2xx, but body is HTML
+      throw new Error(`O servidor retornou uma página HTML (Status ${response.status}) em vez de JSON. Isso indica que a sessão expirou ou a requisição foi redirecionada pelo proxy do AI Studio. SOLUÇÃO: Clique em 'Abrir em Nova Aba' para executar a aplicação fora do iframe.`);
+    }
+    
+    if (!response.ok) {
       throw new Error(`Erro ${response.status}: ${text || response.statusText}`);
     }
-    throw new Error('O servidor retornou uma resposta bem-sucedida, mas o formato não é JSON.');
+    throw new Error(`O formato da resposta não é JSON (Status ${response.status}). Resposta recebida: ${text.substring(0, 150)}...`);
   }
 }
 
