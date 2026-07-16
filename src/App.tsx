@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { 
   FileText, 
@@ -16,6 +16,7 @@ import {
   LogIn, 
   Plus, 
   Trash2, 
+  Edit,
   CheckCircle2, 
   AlertCircle,
   Loader2,
@@ -172,7 +173,22 @@ export default function App() {
   const [dbTab, setDbTab] = useState<'officers' | 'units' | 'terms' | 'admins'>('officers');
   
   // Database State
+  const [searchOfficerQuery, setSearchOfficerQuery] = useState('');
   const [officers, setOfficers] = useState<Officer[]>([]);
+  const filteredAndSortedOfficers = useMemo(() => {
+    return [...officers]
+      .filter(off => {
+        if (!searchOfficerQuery) return true;
+        const q = searchOfficerQuery.toLowerCase();
+        return (
+          (off.name || '').toLowerCase().includes(q) ||
+          (off.registration || '').toLowerCase().includes(q) ||
+          (off.unit || '').toLowerCase().includes(q) ||
+          (off.email || '').toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'pt-BR'));
+  }, [officers, searchOfficerQuery]);
   const [units, setUnits] = useState<Unit[]>([]);
   const [searchTerms, setSearchTerms] = useState<SearchTerm[]>([]);
   const [authorizedAdmins, setAuthorizedAdmins] = useState<AuthorizedAdmin[]>([]);
@@ -219,7 +235,8 @@ export default function App() {
   const [uploadBgDate, setUploadBgDate] = useState<string>(new Date().toISOString().split('T')[0]);
 
   // Form States
-  const [newOfficer, setNewOfficer] = useState({ name: '', registration: '', unit: '', rank: '', role: 'user' as 'admin' | 'user' });
+  const [newOfficer, setNewOfficer] = useState({ name: '', registration: '', unit: '', rank: '', role: 'user' as 'admin' | 'user', email: '' });
+  const [editingOfficer, setEditingOfficer] = useState<Officer | null>(null);
   const [newUnit, setNewUnit] = useState({ name: '', acronym: '' });
   const [newTerm, setNewTerm] = useState({ term: '', category: '' });
   const [isBulkUploading, setIsBulkUploading] = useState(false);
@@ -634,10 +651,26 @@ export default function App() {
         keywords: [] 
       };
       await addDoc(collection(db, 'officers'), officerData);
-      setNewOfficer({ name: '', registration: '', unit: '', rank: '', role: 'user' });
+      setNewOfficer({ name: '', registration: '', unit: '', rank: '', role: 'user', email: '' });
       toast.success('Policial adicionado! Senha inicial é a matrícula.');
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, 'officers');
+    }
+  };
+
+  const handleSaveOfficer = async (updatedData: { name: string, registration: string, unit: string, role: 'admin' | 'user', email: string }) => {
+    if (!editingOfficer) return;
+    
+    const path = `officers/${editingOfficer.id}`;
+    try {
+      const officerRef = doc(db, 'officers', editingOfficer.id);
+      await setDoc(officerRef, updatedData, { merge: true });
+      
+      toast.success('Cadastro do policial atualizado com sucesso!');
+      setEditingOfficer(null);
+    } catch (err) {
+      console.error('Edit Officer Error:', err);
+      handleFirestoreError(err, OperationType.WRITE, path);
     }
   };
 
@@ -804,7 +837,8 @@ export default function App() {
           name: row.Nome || row.nome || row.NAME || row.name || '',
           registration: String(row.Matricula || row.matricula || row.REGISTRATION || row.registration || ''),
           unit: row.Unidade || row.unidade || row.UNIT || row.unit || '',
-          rank: row.Posto || row.Graduacao || row.rank || ''
+          rank: row.Posto || row.Graduacao || row.rank || '',
+          email: row.Email || row.email || row.EMAIL || ''
         };
 
         if (officerData.name && officerData.registration && officerData.unit) {
@@ -1749,6 +1783,14 @@ export default function App() {
           initialPhone={loggedInOfficer?.phone}
           onSave={handleProfileUpdate}
           onCancel={() => setShowProfileUpdate(false)}
+        />
+      )}
+
+      {editingOfficer && (
+        <EditOfficerModal 
+          officer={editingOfficer}
+          onSave={handleSaveOfficer}
+          onCancel={() => setEditingOfficer(null)}
         />
       )}
       
@@ -2759,7 +2801,7 @@ export default function App() {
                           </div>
                         </div>
                       </div>
-                    <form onSubmit={addOfficer} className="grid grid-cols-1 md:grid-cols-5 gap-6 items-end">
+                    <form onSubmit={addOfficer} className="grid grid-cols-1 md:grid-cols-6 gap-6 items-end">
                       <div className="space-y-2">
                         <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Nome Completo</label>
                         <input 
@@ -2801,7 +2843,17 @@ export default function App() {
                           <option value="admin">Administrador</option>
                         </select>
                       </div>
-                      <button type="submit" className="bg-[#5A5A40] text-white rounded-2xl py-4 flex items-center justify-center gap-2 hover:bg-[#4a4a35] transition-colors">
+                      <div className="space-y-2">
+                        <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">E-mail (Notificação)</label>
+                        <input 
+                          type="email"
+                          value={newOfficer.email}
+                          onChange={e => setNewOfficer({...newOfficer, email: e.target.value})}
+                          className="w-full bg-[#f5f5f0] border-none rounded-2xl px-6 py-4 focus:ring-2 focus:ring-[#5A5A40]/20"
+                          placeholder="Ex: pm@email.com"
+                        />
+                      </div>
+                      <button type="submit" className="bg-[#5A5A40] text-white rounded-2xl py-4 flex items-center justify-center gap-2 hover:bg-[#4a4a35] transition-colors h-[56px] font-bold">
                         <Plus className="w-5 h-5" />
                         Adicionar
                       </button>
@@ -2957,6 +3009,28 @@ export default function App() {
                   </div>
                 )}
               </div>
+              
+              {/* Search input for officers */}
+              {dbTab === 'officers' && (
+                <div className="bg-white rounded-[24px] p-5 mb-6 border border-black/5 shadow-sm flex items-center gap-3">
+                  <Search className="w-5 h-5 text-[#5A5A40]/50" />
+                  <input
+                    type="text"
+                    value={searchOfficerQuery}
+                    onChange={(e) => setSearchOfficerQuery(e.target.value)}
+                    placeholder="Buscar policial por nome, matrícula, unidade ou e-mail..."
+                    className="w-full bg-transparent border-none text-sm text-[#5A5A40] placeholder-[#5A5A40]/40 focus:ring-0 focus:outline-none"
+                  />
+                  {searchOfficerQuery && (
+                    <button 
+                      onClick={() => setSearchOfficerQuery('')}
+                      className="text-xs font-bold text-red-500 hover:text-red-700 uppercase tracking-wider px-2"
+                    >
+                      Limpar
+                    </button>
+                  )}
+                </div>
+              )}
 
               {/* Tables */}
               {dbTab !== 'admins' && (
@@ -2970,6 +3044,7 @@ export default function App() {
                             <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Matrícula</th>
                             <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Unidade</th>
                             <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">Acesso</th>
+                            <th className="px-8 py-6 text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60">E-mail de Notificação</th>
                           </>
                         )}
                         {dbTab === 'units' && (
@@ -2988,7 +3063,7 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {dbTab === 'officers' && officers.map(off => (
+                      {dbTab === 'officers' && filteredAndSortedOfficers.map(off => (
                         <tr key={off.id} className="border-t border-black/5 hover:bg-[#f5f5f0]/20 transition-colors">
                           <td className="px-8 py-6 font-medium">{off.name}</td>
                           <td className="px-8 py-6 font-mono text-sm">{off.registration}</td>
@@ -3001,7 +3076,17 @@ export default function App() {
                               {off.role === 'admin' ? 'Admin' : 'Usuário'}
                             </span>
                           </td>
-                          <td className="px-8 py-6 text-right">
+                          <td className="px-8 py-6 text-sm text-[#5A5A40]/70 max-w-[200px] truncate" title={off.email}>
+                            {off.email || <span className="text-[#5A5A40]/30 italic">Não cadastrado</span>}
+                          </td>
+                          <td className="px-8 py-6 text-right space-x-2">
+                            <button 
+                              onClick={() => setEditingOfficer(off)} 
+                              className="p-2 text-[#5A5A40] hover:text-[#4a4a35] hover:bg-[#f5f5f0] rounded-xl transition-all"
+                              title="Editar Policial"
+                            >
+                              <Edit className="w-5 h-5" />
+                            </button>
                             <button onClick={() => deleteItem('officers', off.id)} className="p-2 text-red-400 hover:text-red-600 transition-colors">
                               <Trash2 className="w-5 h-5" />
                             </button>
@@ -3538,6 +3623,128 @@ function ProfileUpdateModal({ initialEmail, initialPhone, onSave, onCancel }: { 
           >
             Cancelar
           </button>
+        </form>
+      </motion.div>
+    </div>
+  );
+}
+
+function EditOfficerModal({ 
+  officer, 
+  onSave, 
+  onCancel 
+}: { 
+  officer: Officer, 
+  onSave: (updatedData: { name: string, registration: string, unit: string, role: 'admin' | 'user', email: string }) => void, 
+  onCancel: () => void 
+}) {
+  const [name, setName] = useState(officer.name || '');
+  const [registration, setRegistration] = useState(officer.registration || '');
+  const [unit, setUnit] = useState(officer.unit || '');
+  const [role, setRole] = useState<'admin' | 'user'>(officer.role || 'user');
+  const [email, setEmail] = useState(officer.email || '');
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name || !registration || !unit) {
+      toast.error('Por favor, preencha os campos obrigatórios (Nome, Matrícula e Unidade).');
+      return;
+    }
+    onSave({ name, registration, unit, role, email });
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-6">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.9 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="w-full max-w-lg bg-white rounded-[32px] md:rounded-[40px] p-8 md:p-12 shadow-2xl border border-black/5 max-h-[90vh] overflow-y-auto"
+      >
+        <div className="flex flex-col items-center mb-8">
+          <div className="w-14 h-14 md:w-16 md:h-16 bg-[#5A5A40]/10 rounded-2xl flex items-center justify-center mb-6">
+            <UserIcon className="text-[#5A5A40] w-6 h-6 md:w-8 md:h-8" />
+          </div>
+          <h2 className="text-2xl md:text-3xl font-serif font-light mb-2">Editar Policial</h2>
+          <p className="text-[#5A5A40]/60 text-center text-sm">Altere as informações do cadastro do policial.</p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <div className="space-y-2">
+            <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Nome Completo</label>
+            <input 
+              required
+              value={name}
+              onChange={e => setName(e.target.value)}
+              className="w-full bg-[#f5f5f0] border-none rounded-2xl px-6 py-4 focus:ring-2 focus:ring-[#5A5A40]/20 text-sm"
+              placeholder="Ex: João Silva"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Matrícula</label>
+              <input 
+                required
+                value={registration}
+                onChange={e => setRegistration(e.target.value)}
+                className="w-full bg-[#f5f5f0] border-none rounded-2xl px-6 py-4 focus:ring-2 focus:ring-[#5A5A40]/20 text-sm"
+                placeholder="Ex: 123.456-7"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Unidade</label>
+              <input 
+                required
+                value={unit}
+                onChange={e => setUnit(e.target.value)}
+                className="w-full bg-[#f5f5f0] border-none rounded-2xl px-6 py-4 focus:ring-2 focus:ring-[#5A5A40]/20 text-sm"
+                placeholder="Ex: 1º BPM"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">Nível de Acesso</label>
+              <select 
+                value={role}
+                onChange={e => setRole(e.target.value as 'admin' | 'user')}
+                className="w-full bg-[#f5f5f0] border-none rounded-2xl px-6 py-4 focus:ring-2 focus:ring-[#5A5A40]/20 text-sm appearance-none"
+              >
+                <option value="user">Usuário Comum</option>
+                <option value="admin">Administrador</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-bold uppercase tracking-widest text-[#5A5A40]/60 ml-2">E-mail para Notificações</label>
+              <input 
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                className="w-full bg-[#f5f5f0] border-none rounded-2xl px-6 py-4 focus:ring-2 focus:ring-[#5A5A40]/20 text-sm"
+                placeholder="policial@email.com"
+              />
+            </div>
+          </div>
+
+          <div className="pt-4 space-y-3">
+            <button 
+              type="submit"
+              className="w-full bg-[#5A5A40] text-white rounded-2xl py-5 font-bold shadow-lg shadow-[#5A5A40]/20 hover:bg-[#4a4a35] transition-all text-sm"
+            >
+              Salvar Alterações
+            </button>
+            
+            <button 
+              type="button"
+              onClick={onCancel}
+              className="w-full text-sm font-bold text-[#5A5A40]/40 hover:text-red-500 transition-colors py-2"
+            >
+              Cancelar
+            </button>
+          </div>
         </form>
       </motion.div>
     </div>
