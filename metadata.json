@@ -1,5 +1,6 @@
 {
   "name": "SIA-PMRN: Sistema de Identificação Automatizada",
   "description": "Sistema para leitura de Boletins Gerais e Aditamentos da PMRN, identificando automaticamente policiais, instituições e termos personalizados.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
